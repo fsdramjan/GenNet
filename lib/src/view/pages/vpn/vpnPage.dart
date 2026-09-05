@@ -6,18 +6,18 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../models/app_usage.dart';
-import '../services/export_service.dart';
-import '../services/monitor_service.dart';
+import '../../../model/vpn/app_usage.dart';
+import '../../../service/vpn/export_service.dart';
+import '../../../service/vpn/monitor_service.dart';
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+class VpnPage extends StatefulWidget {
+  VpnPage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<VpnPage> createState() => _VpnPageState();
 }
 
-class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
+class _VpnPageState extends State<VpnPage> with TickerProviderStateMixin {
   final MonitorService _monitor = MonitorService();
   final ExportService _export = ExportService();
 
@@ -47,23 +47,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   HttpClient? _httpClient;
 
-  static const _bg = Color(0xFFF4F7FC);
-  static const _ink = Color(0xFF111827);
+  // ---------------------------------------------------------------------
+  // DARK THEME PALETTE
+  // ---------------------------------------------------------------------
+  // Self-contained on purpose: defined directly here rather than pulled
+  // from AppColors, so this page's dark redesign can't accidentally
+  // affect any other screen that also reads AppColors.
 
-  static const _brandA = Color.fromARGB(255, 0, 78, 187);
-  static const _brandB = Color(0xFF4D9BFF);
+  static const _bg = Color(0xFF0D1117); // page background
+  static const _surface = Color(0xFF161B22); // card / surface background
+  static const _surfaceAlt = Color(0xFF1E242C); // inputs, chips, inner panels
+  static const _ink = Color(0xFFF1F3F6); // primary text (light, on dark)
+  static const _inkMuted = Color(0xFFA3ADBA); // secondary/muted text
+  static const _inkFaint = Color(0xFF6E7885); // tertiary text, disabled icons
+  static const _border = Color(0xFF262D38); // dividers / hairline borders
 
-  static const _accentTeal = Color(0xFF00BFA6);
-  static const _accentOrange = Color(0xFFFFA62B);
-  static const _accentPurple = Color(0xFF7C5CFC);
+  static const _brandA = Color(0xFF3B82F6);
+  static const _brandB = Color(0xFF60A5FA);
+
+  static const _accentTeal = Color(0xFF2DD4BF);
+  static const _accentOrange = Color(0xFFFBBF24);
+  static const _accentPurple = Color(0xFFA78BFA);
 
   @override
   void initState() {
     super.initState();
 
     _httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 8)
-      ..idleTimeout = const Duration(seconds: 10);
+      ..connectionTimeout = Duration(seconds: 8)
+      ..idleTimeout = Duration(seconds: 10);
 
     _tabController = TabController(
       length: 2,
@@ -72,7 +84,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     _pulseController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1400),
+      duration: Duration(milliseconds: 1400),
     )..repeat(reverse: true);
 
     _loadApps();
@@ -150,7 +162,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     if (_ipLookupLoading.contains(normalizedIp)) {
       for (int i = 0; i < 40; i++) {
-        await Future.delayed(const Duration(milliseconds: 100));
+        await Future.delayed(Duration(milliseconds: 100));
 
         final result = _ipInfoCache[normalizedIp];
 
@@ -201,7 +213,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       final decoded = jsonDecode(body);
 
       if (decoded is! Map<String, dynamic>) {
-        throw const FormatException(
+        throw FormatException(
           'Invalid IP API response',
         );
       }
@@ -400,7 +412,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _durationTimer?.cancel();
 
       _durationTimer = Timer.periodic(
-        const Duration(seconds: 1),
+        Duration(seconds: 1),
         (_) {
           final start = _monitor.sessionStart;
 
@@ -433,6 +445,111 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
+  /// Relevance-ranked app search -- not just "contains()". Name matches
+  /// rank above package-name matches, and within each, an exact or
+  /// prefix match ranks above a plain substring match, so typing
+  /// "chrome" surfaces Chrome itself before something merely mentioning
+  /// it in its package id.
+  List<AppInfo> _searchApps(List<AppInfo> apps, String query) {
+    final q = query.trim().toLowerCase();
+
+    if (q.isEmpty) {
+      return apps;
+    }
+
+    final scored = <MapEntry<AppInfo, int>>[];
+
+    for (final app in apps) {
+      final name = app.appName.toLowerCase();
+      final pkg = app.packageName.toLowerCase();
+
+      int? score;
+
+      if (name == q) {
+        score = 100;
+      } else if (name.startsWith(q)) {
+        score = 90;
+      } else if (name.contains(' $q') || name.contains('_$q')) {
+        // Matches the start of a later word, e.g. "lite" in "Facebook Lite".
+        score = 80;
+      } else if (name.contains(q)) {
+        score = 70;
+      } else if (pkg.startsWith(q) || pkg.contains('.$q')) {
+        score = 50;
+      } else if (pkg.contains(q)) {
+        score = 40;
+      }
+
+      if (score != null) {
+        scored.add(MapEntry(app, score));
+      }
+    }
+
+    scored.sort((a, b) {
+      final byScore = b.value.compareTo(a.value);
+      if (byScore != 0) return byScore;
+      return a.key.appName.toLowerCase().compareTo(b.key.appName.toLowerCase());
+    });
+
+    return scored.map((e) => e.key).toList();
+  }
+
+  /// Renders [text] with the portion matching [query] highlighted in
+  /// the brand color, so it's visually obvious *why* a result matched.
+  Widget _highlightedText(
+    String text,
+    String query, {
+    required TextStyle style,
+    TextStyle? highlightStyle,
+  }) {
+    final q = query.trim();
+
+    if (q.isEmpty) {
+      return Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+
+    final lowerText = text.toLowerCase();
+    final lowerQuery = q.toLowerCase();
+    final matchIndex = lowerText.indexOf(lowerQuery);
+
+    if (matchIndex < 0) {
+      return Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+
+    final matchEnd = matchIndex + q.length;
+
+    return RichText(
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(
+        style: style,
+        children: [
+          TextSpan(text: text.substring(0, matchIndex)),
+          TextSpan(
+            text: text.substring(matchIndex, matchEnd),
+            style: highlightStyle ??
+                style.copyWith(
+                  color: _brandB,
+                  fontWeight: FontWeight.w800,
+                  backgroundColor: _brandA.withOpacity(.22),
+                ),
+          ),
+          TextSpan(text: text.substring(matchEnd)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openAppSelector() async {
     if (_running) return;
 
@@ -447,225 +564,249 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
-            final filtered = _installedApps.where((app) {
-              final q = search.trim().toLowerCase();
-
-              if (q.isEmpty) return true;
-
-              return app.appName.toLowerCase().contains(q) ||
-                  app.packageName.toLowerCase().contains(q);
-            }).toList();
+            final filtered = _searchApps(_installedApps, search);
 
             final allFilteredSelected = filtered.isNotEmpty &&
                 filtered.every(
                   (app) => temp.contains(app.packageName),
                 );
 
-            return DraggableScrollableSheet(
-              initialChildSize: .85,
-              minChildSize: .45,
-              maxChildSize: .96,
-              expand: false,
-              builder: (_, controller) {
-                return Container(
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(28),
+            return PopScope(
+              canPop: false,
+              onPopInvoked: (didPop) {
+                if (didPop) return;
+                // Back button (or any other way the sheet gets popped)
+                // now behaves like DONE -- commits whatever was
+                // selected in this session instead of silently
+                // discarding it back to the previous selection.
+                Navigator.pop(ctx, temp);
+              },
+              child: DraggableScrollableSheet(
+                initialChildSize: .85,
+                minChildSize: .45,
+                maxChildSize: .96,
+                expand: false,
+                builder: (_, controller) {
+                  return Container(
+                    decoration: BoxDecoration(
+                      color: _surface,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(28),
+                      ),
                     ),
-                  ),
-                  child: Column(
-                    children: [
-                      const SizedBox(height: 10),
-                      _sheetHandle(),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(
-                          20,
-                          18,
-                          20,
-                          6,
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'Select apps',
-                                    style: TextStyle(
-                                      fontSize: 21,
-                                      fontWeight: FontWeight.w800,
-                                      color: _ink,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    '${temp.length} of ${_installedApps.length} selected',
-                                    style: TextStyle(
-                                      fontSize: 12.5,
-                                      color: Colors.grey.shade600,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            _pillButton(
-                              label: allFilteredSelected
-                                  ? 'CLEAR ALL'
-                                  : 'SELECT ALL',
-                              filled: false,
-                              onTap: () {
-                                setSheetState(() {
-                                  if (allFilteredSelected) {
-                                    for (final app in filtered) {
-                                      temp.remove(app.packageName);
-                                    }
-                                  } else {
-                                    for (final app in filtered) {
-                                      temp.add(app.packageName);
-                                    }
-                                  }
-                                });
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(
-                          20,
-                          12,
-                          20,
-                          0,
-                        ),
-                        child: TextField(
-                          onChanged: (value) {
-                            setSheetState(() {
-                              search = value;
-                            });
-                          },
-                          decoration: InputDecoration(
-                            hintText: 'Search installed apps',
-                            hintStyle: TextStyle(
-                              color: Colors.grey.shade500,
-                            ),
-                            prefixIcon: Icon(
-                              Icons.search_rounded,
-                              color: Colors.grey.shade500,
-                            ),
-                            suffixIcon: search.isNotEmpty
-                                ? IconButton(
-                                    onPressed: () {
-                                      setSheetState(() {
-                                        search = '';
-                                      });
-                                    },
-                                    icon: const Icon(
-                                      Icons.clear_rounded,
-                                    ),
-                                  )
-                                : null,
-                            filled: true,
-                            fillColor: _bg,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide.none,
-                            ),
+                    child: Column(
+                      children: [
+                        SizedBox(height: 10),
+                        _sheetHandle(),
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            20,
+                            18,
+                            20,
+                            6,
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Expanded(
-                        child: _loadingApps
-                            ? const Center(
-                                child: CircularProgressIndicator(
-                                  color: _brandA,
-                                ),
-                              )
-                            : filtered.isEmpty
-                                ? Center(
-                                    child: Text(
-                                      'No apps found',
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Select apps',
                                       style: TextStyle(
-                                        color: Colors.grey.shade600,
+                                        fontSize: 21,
+                                        fontWeight: FontWeight.w800,
+                                        color: _ink,
                                       ),
                                     ),
-                                  )
-                                : ListView.separated(
-                                    controller: controller,
-                                    padding: const EdgeInsets.fromLTRB(
-                                      12,
-                                      6,
-                                      12,
-                                      24,
+                                    SizedBox(height: 2),
+                                    Text(
+                                      '${temp.length} of ${_installedApps.length} selected',
+                                      style: TextStyle(
+                                        fontSize: 12.5,
+                                        color: _inkMuted,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
-                                    itemCount: filtered.length,
-                                    separatorBuilder: (_, __) =>
-                                        const SizedBox(height: 4),
-                                    itemBuilder: (_, index) {
-                                      final app = filtered[index];
-
-                                      final checked = temp.contains(
-                                        app.packageName,
-                                      );
-
-                                      return _appSelectorRow(
-                                        // Stable identity per app, keyed
-                                        // by package name -- without
-                                        // this, Flutter can reuse a
-                                        // row's Element/State for a
-                                        // DIFFERENT app after the list
-                                        // is filtered by search, making
-                                        // an app look like it got
-                                        // "unselected" (or its check
-                                        // animation replay) even though
-                                        // nothing in `temp` actually
-                                        // changed.
-                                        key: ValueKey(app.packageName),
-                                        app: app,
-                                        checked: checked,
-                                        onChanged: (value) {
-                                          setSheetState(() {
-                                            if (value == true) {
-                                              temp.add(
-                                                app.packageName,
-                                              );
-                                            } else {
-                                              temp.remove(
-                                                app.packageName,
-                                              );
-                                            }
-                                          });
-                                        },
-                                      );
-                                    },
-                                  ),
-                      ),
-                      SafeArea(
-                        top: false,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(
-                            20,
-                            8,
-                            20,
-                            14,
+                                  ],
+                                ),
+                              ),
+                              _pillButton(
+                                label: allFilteredSelected
+                                    ? 'CLEAR ALL'
+                                    : 'SELECT ALL',
+                                filled: false,
+                                onTap: () {
+                                  setSheetState(() {
+                                    if (allFilteredSelected) {
+                                      for (final app in filtered) {
+                                        temp.remove(app.packageName);
+                                      }
+                                    } else {
+                                      for (final app in filtered) {
+                                        temp.add(app.packageName);
+                                      }
+                                    }
+                                  });
+                                },
+                              ),
+                            ],
                           ),
-                          child: SizedBox(
-                            width: double.infinity,
-                            height: 52,
-                            child: _gradientButton(
-                              label: 'DONE',
-                              onTap: () => Navigator.pop(ctx, temp),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            20,
+                            12,
+                            20,
+                            0,
+                          ),
+                          child: TextField(
+                            style: TextStyle(color: _ink),
+                            onChanged: (value) {
+                              setSheetState(() {
+                                search = value;
+                              });
+                            },
+                            decoration: InputDecoration(
+                              hintText: 'Search installed apps',
+                              hintStyle: TextStyle(
+                                color: _inkFaint,
+                              ),
+                              prefixIcon: Icon(
+                                Icons.search_rounded,
+                                color: _inkFaint,
+                              ),
+                              suffixIcon: search.isNotEmpty
+                                  ? IconButton(
+                                      onPressed: () {
+                                        setSheetState(() {
+                                          search = '';
+                                        });
+                                      },
+                                      icon: Icon(
+                                        Icons.clear_rounded,
+                                        color: _inkFaint,
+                                      ),
+                                    )
+                                  : null,
+                              filled: true,
+                              fillColor: _surfaceAlt,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                borderSide: BorderSide.none,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                );
-              },
+                        if (search.trim().isNotEmpty)
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(24, 6, 20, 0),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                filtered.isEmpty
+                                    ? 'No matches for "${search.trim()}"'
+                                    : '${filtered.length} match${filtered.length == 1 ? '' : 'es'}',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: _inkMuted,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        SizedBox(height: 10),
+                        Expanded(
+                          child: _loadingApps
+                              ? Center(
+                                  child: CircularProgressIndicator(
+                                    color: _brandA,
+                                  ),
+                                )
+                              : filtered.isEmpty
+                                  ? Center(
+                                      child: Text(
+                                        'No apps found',
+                                        style: TextStyle(
+                                          color: _inkMuted,
+                                        ),
+                                      ),
+                                    )
+                                  : ListView.separated(
+                                      controller: controller,
+                                      padding: EdgeInsets.fromLTRB(
+                                        12,
+                                        6,
+                                        12,
+                                        24,
+                                      ),
+                                      itemCount: filtered.length,
+                                      separatorBuilder: (_, __) =>
+                                          SizedBox(height: 4),
+                                      itemBuilder: (_, index) {
+                                        final app = filtered[index];
+
+                                        final checked = temp.contains(
+                                          app.packageName,
+                                        );
+
+                                        return _appSelectorRow(
+                                          // Stable identity per app, keyed
+                                          // by package name -- without
+                                          // this, Flutter can reuse a
+                                          // row's Element/State for a
+                                          // DIFFERENT app after the list
+                                          // is filtered by search, making
+                                          // an app look like it got
+                                          // "unselected" (or its check
+                                          // animation replay) even though
+                                          // nothing in `temp` actually
+                                          // changed.
+                                          key: ValueKey(app.packageName),
+                                          app: app,
+                                          checked: checked,
+                                          query: search,
+                                          onChanged: (value) {
+                                            setSheetState(() {
+                                              if (value == true) {
+                                                temp.add(
+                                                  app.packageName,
+                                                );
+                                              } else {
+                                                temp.remove(
+                                                  app.packageName,
+                                                );
+                                              }
+                                            });
+                                          },
+                                        );
+                                      },
+                                    ),
+                        ),
+                        SafeArea(
+                          top: false,
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              20,
+                              8,
+                              20,
+                              14,
+                            ),
+                            child: SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: _gradientButton(
+                                label: 'DONE',
+                                onTap: () => Navigator.pop(ctx, temp),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
             );
           },
         );
@@ -686,46 +827,46 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     required AppInfo app,
     required bool checked,
     required ValueChanged<bool?> onChanged,
+    String query = '',
   }) {
     return InkWell(
       key: key,
       borderRadius: BorderRadius.circular(16),
       onTap: () => onChanged(!checked),
       child: Container(
-        padding: const EdgeInsets.symmetric(
+        padding: EdgeInsets.symmetric(
           horizontal: 10,
           vertical: 8,
         ),
         decoration: BoxDecoration(
-          color: checked ? _brandA.withOpacity(.06) : Colors.transparent,
+          color: checked ? _brandA.withOpacity(.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           children: [
             _appIcon(app, size: 42),
-            const SizedBox(width: 13),
+            SizedBox(width: 13),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  _highlightedText(
                     app.appName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    query,
+                    style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.w700,
                       color: _ink,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  SizedBox(height: 2),
                   Text(
                     app.packageName,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 11.5,
-                      color: Colors.grey.shade500,
+                      color: _inkFaint,
                     ),
                   ),
                 ],
@@ -740,24 +881,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _checkDot(bool checked) {
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
+      duration: Duration(milliseconds: 180),
       width: 24,
       height: 24,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         gradient: checked
-            ? const LinearGradient(
+            ? LinearGradient(
                 colors: [_brandA, _brandB],
               )
             : null,
-        color: checked ? null : Colors.white,
+        color: checked ? null : _surfaceAlt,
         border: Border.all(
-          color: checked ? Colors.transparent : Colors.grey.shade300,
+          color: checked ? Colors.transparent : _border,
           width: 1.6,
         ),
       ),
       child: checked
-          ? const Icon(
+          ? Icon(
               Icons.check_rounded,
               size: 16,
               color: Colors.white,
@@ -771,7 +912,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       width: 40,
       height: 5,
       decoration: BoxDecoration(
-        color: Colors.grey.shade300,
+        color: _border,
         borderRadius: BorderRadius.circular(20),
       ),
     );
@@ -922,13 +1063,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(message),
+          content: Text(
+            message,
+            style: TextStyle(color: _ink),
+          ),
           behavior: SnackBarBehavior.floating,
-          backgroundColor: _ink,
+          backgroundColor: _surfaceAlt,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
-          margin: const EdgeInsets.all(14),
+          margin: EdgeInsets.all(14),
         ),
       );
   }
@@ -966,7 +1110,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       return _accentPurple;
     }
 
-    return Colors.grey;
+    return _inkMuted;
   }
 
   @override
@@ -994,11 +1138,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         gradient: disabled
             ? LinearGradient(
                 colors: [
-                  Colors.grey.shade300,
-                  Colors.grey.shade300,
+                  _surfaceAlt,
+                  _surfaceAlt,
                 ],
               )
-            : const LinearGradient(
+            : LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [_brandA, _brandB],
@@ -1009,7 +1153,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 BoxShadow(
                   color: _brandA.withOpacity(.35),
                   blurRadius: 16,
-                  offset: const Offset(0, 8),
+                  offset: Offset(0, 8),
                 ),
               ],
       ),
@@ -1024,12 +1168,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               children: [
                 if (icon != null) ...[
                   icon,
-                  const SizedBox(width: 8),
+                  SizedBox(width: 8),
                 ],
                 Text(
                   label,
                   style: TextStyle(
-                    color: disabled ? Colors.grey.shade600 : Colors.white,
+                    color: disabled ? _inkFaint : Colors.white,
                     fontWeight: FontWeight.w800,
                     fontSize: 14,
                     letterSpacing: .4,
@@ -1049,20 +1193,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     bool filled = true,
   }) {
     return Material(
-      color: filled ? _brandA.withOpacity(.1) : Colors.transparent,
+      color: filled ? _brandA.withOpacity(.16) : Colors.transparent,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(
+          padding: EdgeInsets.symmetric(
             horizontal: 14,
             vertical: 8,
           ),
           child: Text(
             label,
-            style: const TextStyle(
-              color: _brandA,
+            style: TextStyle(
+              color: _brandB,
               fontWeight: FontWeight.w800,
               fontSize: 11.5,
               letterSpacing: .3,
@@ -1079,7 +1223,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       backgroundColor: _bg,
       extendBodyBehindAppBar: false,
       appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(150),
+        preferredSize: Size.fromHeight(150),
         child: _header(),
       ),
       body: SafeArea(
@@ -1097,15 +1241,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _header() {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [_brandA, _brandB],
-        ),
+      decoration: BoxDecoration(
+        // gradient: LinearGradient(
+        //   begin: Alignment.topLeft,
+        //   end: Alignment.bottomRight,
+        //   colors: [_brandA, _brandB],
+        // ),
         boxShadow: [
           BoxShadow(
-            color: Color(0x332563EB),
+            color: Colors.black.withOpacity(.28),
             blurRadius: 18,
             offset: Offset(0, 7),
           ),
@@ -1114,7 +1258,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(
+          padding: EdgeInsets.fromLTRB(
             16,
             6,
             16,
@@ -1134,14 +1278,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         color: Colors.white.withOpacity(.16),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.podcasts_rounded,
                         color: Colors.white,
                         size: 19,
                       ),
                     ),
-                    const SizedBox(width: 9),
-                    const Expanded(
+                    SizedBox(width: 9),
+                    Expanded(
                       child: Text(
                         'GenNet',
                         style: TextStyle(
@@ -1152,11 +1296,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       ),
                     ),
                     _headerStatusPill(),
-                    const SizedBox(width: 2),
+                    SizedBox(width: 2),
                     PopupMenuButton<String>(
                       tooltip: 'More',
                       padding: EdgeInsets.zero,
-                      icon: const Icon(
+                      color: _surfaceAlt,
+                      icon: Icon(
                         Icons.more_vert_rounded,
                         color: Colors.white,
                         size: 23,
@@ -1175,7 +1320,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
                       ),
-                      itemBuilder: (_) => const [
+                      itemBuilder: (_) => [
                         PopupMenuItem(
                           value: 'csv',
                           child: Row(
@@ -1183,9 +1328,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               Icon(
                                 Icons.table_chart_outlined,
                                 size: 19,
+                                color: _ink,
                               ),
                               SizedBox(width: 10),
-                              Text('Export CSV'),
+                              Text(
+                                'Export CSV',
+                                style: TextStyle(color: _ink),
+                              ),
                             ],
                           ),
                         ),
@@ -1196,9 +1345,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               Icon(
                                 Icons.description_outlined,
                                 size: 19,
+                                color: _ink,
                               ),
                               SizedBox(width: 10),
-                              Text('Export TXT'),
+                              Text(
+                                'Export TXT',
+                                style: TextStyle(color: _ink),
+                              ),
                             ],
                           ),
                         ),
@@ -1208,11 +1361,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           child: Row(
                             children: [
                               Icon(
-                                Icons.delete_outline,
+                                Icons.picture_in_picture_alt_outlined,
                                 size: 19,
+                                color: _ink,
                               ),
                               SizedBox(width: 10),
-                              Text('Floating overlay (PIP)'),
+                              Text(
+                                'Floating overlay (PIP)',
+                                style: TextStyle(color: _ink),
+                              ),
                             ],
                           ),
                         ),
@@ -1224,9 +1381,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               Icon(
                                 Icons.delete_outline,
                                 size: 19,
+                                color: _ink,
                               ),
                               SizedBox(width: 10),
-                              Text('Clear traffic'),
+                              Text(
+                                'Clear traffic',
+                                style: TextStyle(color: _ink),
+                              ),
                             ],
                           ),
                         ),
@@ -1235,7 +1396,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ],
                 ),
               ),
-              const SizedBox(height: 7),
+              SizedBox(height: 7),
               SizedBox(
                 height: 40,
                 child: _segmentedTabs(),
@@ -1254,7 +1415,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         final pulse = _running ? _pulseController.value : 0.0;
 
         return Container(
-          padding: const EdgeInsets.symmetric(
+          padding: EdgeInsets.symmetric(
             horizontal: 10,
             vertical: 6,
           ),
@@ -1272,17 +1433,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   shape: BoxShape.circle,
                   color: _running
                       ? Color.lerp(
-                          const Color(0xFF00E5A0),
+                          Color(0xFF00E5A0),
                           Colors.white,
                           pulse * .5,
                         )
                       : Colors.white54,
                 ),
               ),
-              const SizedBox(width: 6),
+              SizedBox(width: 6),
               Text(
                 _running ? 'LIVE' : 'IDLE',
-                style: const TextStyle(
+                style: TextStyle(
                   color: Colors.white,
                   fontSize: 10.5,
                   fontWeight: FontWeight.w800,
@@ -1298,7 +1459,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _segmentedTabs() {
     return Container(
-      padding: const EdgeInsets.all(4),
+      padding: EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(.14),
         borderRadius: BorderRadius.circular(16),
@@ -1313,16 +1474,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         dividerColor: Colors.transparent,
         labelColor: _brandA,
         unselectedLabelColor: Colors.white,
-        labelStyle: const TextStyle(
+        labelStyle: TextStyle(
           fontSize: 13,
           fontWeight: FontWeight.w800,
         ),
-        unselectedLabelStyle: const TextStyle(
+        unselectedLabelStyle: TextStyle(
           fontSize: 13,
           fontWeight: FontWeight.w700,
         ),
         tabs: [
-          const Tab(
+          Tab(
             height: 40,
             child: _TabLabel(
               icon: Icons.tune_rounded,
@@ -1344,13 +1505,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _setupTab() {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(16),
       children: [
         _controlCard(),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         _quickStatsRow(),
         if (!_running) ...[
-          const SizedBox(height: 12),
+          SizedBox(height: 12),
           _tipCard(),
         ],
       ],
@@ -1359,17 +1520,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _controlCard() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _surface,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.04),
-            blurRadius: 12,
-            offset: const Offset(0, 5),
-          ),
-        ],
+        border: Border.all(color: _border),
       ),
       child: Column(
         children: [
@@ -1379,23 +1534,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
+                  gradient: LinearGradient(
                     colors: [_brandA, _brandB],
                   ),
                   borderRadius: BorderRadius.circular(13),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.radar_rounded,
                   color: Colors.white,
                   size: 21,
                 ),
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Network Monitor',
                       style: TextStyle(
                         fontSize: 16,
@@ -1403,14 +1558,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         color: _ink,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    SizedBox(height: 2),
                     Text(
                       _running
                           ? 'Monitoring • ${_formatDuration(_elapsed)}'
                           : 'Select apps to monitor',
                       style: TextStyle(
                         fontSize: 11.5,
-                        color: Colors.grey.shade600,
+                        color: _inkMuted,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -1420,17 +1575,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               _ringIndicator(),
             ],
           ),
-          const SizedBox(height: 14),
+          SizedBox(height: 14),
           InkWell(
             onTap: _running || _loadingApps ? null : _openAppSelector,
             borderRadius: BorderRadius.circular(14),
             child: Container(
               height: 48,
-              padding: const EdgeInsets.symmetric(
+              padding: EdgeInsets.symmetric(
                 horizontal: 14,
               ),
               decoration: BoxDecoration(
-                color: _bg,
+                color: _surfaceAlt,
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
@@ -1438,9 +1593,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Icon(
                     Icons.apps_rounded,
                     size: 19,
-                    color: _running ? Colors.grey : _brandA,
+                    color: _running ? _inkFaint : _brandB,
                   ),
-                  const SizedBox(width: 10),
+                  SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       _selectedPackages.isEmpty
@@ -1449,20 +1604,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w700,
-                        color: _running ? Colors.grey : _ink,
+                        color: _running ? _inkFaint : _ink,
                       ),
                     ),
                   ),
                   if (!_running)
                     Icon(
                       Icons.chevron_right_rounded,
-                      color: Colors.grey.shade400,
+                      color: _inkFaint,
                     ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 14),
+          SizedBox(height: 14),
           SizedBox(
             height: 48,
             width: double.infinity,
@@ -1474,7 +1629,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       : 'START MONITORING',
               onTap: _busy ? null : _toggleMonitoring,
               icon: _busy
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(
@@ -1490,7 +1645,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             ),
           ),
           if (_selectedPackages.isNotEmpty) ...[
-            const SizedBox(height: 24),
+            SizedBox(height: 24),
             _selectedAppNames(),
           ],
         ],
@@ -1511,18 +1666,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             height: 46,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: _running
-                  ? const Color(0xFF00E5A0).withOpacity(.14)
-                  : Colors.grey.withOpacity(.08),
+              color:
+                  _running ? Color(0xFF00E5A0).withOpacity(.16) : _surfaceAlt,
               border: Border.all(
-                color:
-                    _running ? const Color(0xFF00E5A0) : Colors.grey.shade300,
+                color: _running ? Color(0xFF00E5A0) : _border,
                 width: 2,
               ),
             ),
             child: Icon(
               _running ? Icons.bolt_rounded : Icons.bolt_outlined,
-              color: _running ? const Color(0xFF00B589) : Colors.grey.shade400,
+              color: _running ? Color(0xFF00E5A0) : _inkFaint,
               size: 22,
             ),
           ),
@@ -1539,10 +1692,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             icon: Icons.swap_vert_rounded,
             value: '${_flows.length}',
             label: 'Flows',
-            color: _brandA,
+            color: _brandB,
           ),
         ),
-        const SizedBox(width: 10),
+        SizedBox(width: 10),
         Expanded(
           child: _miniStatCard(
             icon: Icons.data_usage_rounded,
@@ -1562,24 +1715,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     required Color color,
   }) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _surface,
         borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.035),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: _border),
       ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: color.withOpacity(.10),
+              color: color.withOpacity(.14),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
@@ -1588,7 +1735,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               color: color,
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1597,7 +1744,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
                     color: _ink,
@@ -1607,7 +1754,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   label,
                   style: TextStyle(
                     fontSize: 10.5,
-                    color: Colors.grey.shade600,
+                    color: _inkMuted,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1621,25 +1768,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _tipCard() {
     return Container(
-      padding: const EdgeInsets.symmetric(
+      padding: EdgeInsets.symmetric(
         horizontal: 14,
         vertical: 12,
       ),
       decoration: BoxDecoration(
-        color: _brandA.withOpacity(.06),
+        color: _brandA.withOpacity(.10),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: _brandA.withOpacity(.10),
+          color: _brandA.withOpacity(.24),
         ),
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.lightbulb_outline_rounded,
-            color: _brandA,
+            color: _brandB,
             size: 19,
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: 10),
           Expanded(
             child: Text(
               _selectedPackages.isEmpty
@@ -1647,7 +1794,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   : 'Press START and open the selected app to see traffic.',
               style: TextStyle(
                 fontSize: 11.5,
-                color: Colors.grey.shade700,
+                color: _inkMuted,
                 height: 1.3,
                 fontWeight: FontWeight.w500,
               ),
@@ -1674,19 +1821,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       runSpacing: 7,
       children: names.map((name) {
         return Container(
-          padding: const EdgeInsets.symmetric(
+          padding: EdgeInsets.symmetric(
             horizontal: 11,
             vertical: 6,
           ),
           decoration: BoxDecoration(
-            color: _brandA.withOpacity(.08),
+            color: _brandA.withOpacity(.14),
             borderRadius: BorderRadius.circular(20),
           ),
           child: Text(
             name,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
-              color: _brandA,
+              color: _brandB,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -1717,7 +1864,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             itemCount: visibleFlows.length,
             itemBuilder: (_, index) => _flowTile(visibleFlows[index]),
           ),
-        const SliverToBoxAdapter(
+        SliverToBoxAdapter(
           child: SizedBox(height: 16),
         ),
       ],
@@ -1726,33 +1873,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _compactStats() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(
+      margin: EdgeInsets.fromLTRB(
         16,
         10,
         16,
         6,
       ),
-      padding: const EdgeInsets.symmetric(
+      padding: EdgeInsets.symmetric(
         horizontal: 12,
         vertical: 11,
       ),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _surface,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.035),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
+        border: Border.all(color: _border),
       ),
       child: Row(
         children: [
           _compactStat(
             Icons.swap_vert_rounded,
             _flows.length.toString(),
-            _brandA,
+            _brandB,
           ),
           _compactDivider(),
           _compactStat(
@@ -1791,12 +1932,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             size: 16,
             color: color,
           ),
-          const SizedBox(width: 5),
+          SizedBox(width: 5),
           Text(
             value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
               fontWeight: FontWeight.w800,
               color: _ink,
@@ -1811,13 +1952,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       width: 1,
       height: 20,
-      color: Colors.grey.shade200,
+      color: _border,
     );
   }
 
   Widget _compactToolbar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         16,
         4,
         16,
@@ -1831,8 +1972,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 child: Container(
                   height: 42,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: _surface,
                     borderRadius: BorderRadius.circular(13),
+                    border: Border.all(color: _border),
                   ),
                   child: TextField(
                     onChanged: (value) {
@@ -1840,19 +1982,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         _searchQuery = value;
                       });
                     },
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
+                      color: _ink,
                     ),
                     decoration: InputDecoration(
                       hintText: 'Search IP, country, ISP or port',
                       hintStyle: TextStyle(
                         fontSize: 12,
-                        color: Colors.grey.shade500,
+                        color: _inkFaint,
                       ),
                       prefixIcon: Icon(
                         Icons.search_rounded,
                         size: 19,
-                        color: Colors.grey.shade500,
+                        color: _inkFaint,
                       ),
                       suffixIcon: _searchQuery.isNotEmpty
                           ? IconButton(
@@ -1862,31 +2005,34 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   _searchQuery = '';
                                 });
                               },
-                              icon: const Icon(
+                              icon: Icon(
                                 Icons.clear_rounded,
                                 size: 17,
+                                color: _inkFaint,
                               ),
                             )
                           : null,
                       border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
+                      contentPadding: EdgeInsets.symmetric(
                         vertical: 10,
                       ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 7),
+              SizedBox(width: 7),
               Container(
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: _surface,
                   borderRadius: BorderRadius.circular(13),
+                  border: Border.all(color: _border),
                 ),
                 child: PopupMenuButton<String>(
                   padding: EdgeInsets.zero,
                   tooltip: 'Sort',
+                  color: _surfaceAlt,
                   onSelected: (value) {
                     setState(() {
                       _sortMode = value;
@@ -1895,10 +2041,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.swap_vert_rounded,
                     size: 20,
-                    color: _brandA,
+                    color: _brandB,
                   ),
                   itemBuilder: (_) => [
                     _sortItem(
@@ -1921,7 +2067,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ],
           ),
-          const SizedBox(height: 7),
+          SizedBox(height: 7),
           Row(
             children: [
               Expanded(
@@ -1937,7 +2083,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              const SizedBox(width: 5),
+              SizedBox(width: 5),
               IconButton(
                 visualDensity: VisualDensity.compact,
                 tooltip: 'Clear',
@@ -1945,12 +2091,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 icon: Icon(
                   Icons.delete_outline_rounded,
                   size: 20,
-                  color: Colors.grey.shade600,
+                  color: _inkMuted,
                 ),
               ),
               PopupMenuButton<String>(
                 padding: EdgeInsets.zero,
                 tooltip: 'Export',
+                color: _surfaceAlt,
                 onSelected: (value) {
                   if (value == 'csv') {
                     _exportCsv();
@@ -1964,27 +2111,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 icon: Icon(
                   Icons.file_download_outlined,
                   size: 20,
-                  color: Colors.grey.shade600,
+                  color: _inkMuted,
                 ),
-                itemBuilder: (_) => const [
+                itemBuilder: (_) => [
                   PopupMenuItem(
                     value: 'csv',
-                    child: Text('Export CSV'),
+                    child: Text(
+                      'Export CSV',
+                      style: TextStyle(color: _ink),
+                    ),
                   ),
                   PopupMenuItem(
                     value: 'txt',
-                    child: Text('Export TXT'),
+                    child: Text(
+                      'Export TXT',
+                      style: TextStyle(color: _ink),
+                    ),
                   ),
                 ],
               ),
             ],
           ),
-          const SizedBox(height: 2),
+          SizedBox(height: 2),
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
               'Live traffic · ${_visibleFlows.length}',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w800,
                 color: _ink,
@@ -2000,7 +2153,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final selected = _protocolFilter == value;
 
     return Padding(
-      padding: const EdgeInsets.only(right: 6),
+      padding: EdgeInsets.only(right: 6),
       child: GestureDetector(
         onTap: () {
           setState(() {
@@ -2008,21 +2161,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           });
         },
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(
+          duration: Duration(milliseconds: 140),
+          padding: EdgeInsets.symmetric(
             horizontal: 12,
             vertical: 6,
           ),
           decoration: BoxDecoration(
             gradient: selected
-                ? const LinearGradient(
+                ? LinearGradient(
                     colors: [_brandA, _brandB],
                   )
                 : null,
-            color: selected ? null : Colors.white,
+            color: selected ? null : _surfaceAlt,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: selected ? Colors.transparent : Colors.grey.shade300,
+              color: selected ? Colors.transparent : _border,
             ),
           ),
           child: Text(
@@ -2030,7 +2183,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             style: TextStyle(
               fontSize: 10.5,
               fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-              color: selected ? Colors.white : Colors.grey.shade700,
+              color: selected ? Colors.white : _inkMuted,
             ),
           ),
         ),
@@ -2065,24 +2218,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
       borderRadius: BorderRadius.circular(15),
       child: Container(
-        margin: const EdgeInsets.symmetric(
+        margin: EdgeInsets.symmetric(
           horizontal: 16,
           vertical: 3,
         ),
-        padding: const EdgeInsets.symmetric(
+        padding: EdgeInsets.symmetric(
           horizontal: 11,
           vertical: 10,
         ),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: _surface,
           borderRadius: BorderRadius.circular(15),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(.025),
-              blurRadius: 7,
-              offset: const Offset(0, 2),
-            ),
-          ],
+          border: Border.all(color: _border),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -2096,7 +2243,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     width: 38,
                     height: 38,
                     decoration: BoxDecoration(
-                      color: protocolColor.withOpacity(.10),
+                      color: protocolColor.withOpacity(.14),
                       borderRadius: BorderRadius.circular(11),
                     ),
                     child: Icon(
@@ -2105,7 +2252,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       size: 19,
                     ),
                   ),
-            const SizedBox(width: 10),
+            SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2114,22 +2261,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     app?.appName ?? 'Unknown app',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w800,
                       color: _ink,
                     ),
                   ),
-                  const SizedBox(height: 3),
+                  SizedBox(height: 3),
                   Row(
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(
+                        padding: EdgeInsets.symmetric(
                           horizontal: 6,
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: protocolColor.withOpacity(.10),
+                          color: protocolColor.withOpacity(.14),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
@@ -2141,7 +2288,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           '${flow.destinationIp}:${flow.destinationPort}',
@@ -2149,14 +2296,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 11.5,
-                            color: Colors.grey.shade700,
+                            color: _inkMuted,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 4),
+                  SizedBox(height: 4),
                   if (isLoading)
                     Row(
                       children: [
@@ -2165,15 +2312,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           height: 10,
                           child: CircularProgressIndicator(
                             strokeWidth: 1.5,
-                            color: _brandA,
+                            color: _brandB,
                           ),
                         ),
-                        const SizedBox(width: 5),
+                        SizedBox(width: 5),
                         Text(
                           'Looking up IP...',
                           style: TextStyle(
                             fontSize: 9.5,
-                            color: Colors.grey.shade500,
+                            color: _inkFaint,
                           ),
                         ),
                       ],
@@ -2181,12 +2328,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   else if (ipInfo != null)
                     Row(
                       children: [
-                        const Icon(
+                        Icon(
                           Icons.public_rounded,
                           size: 12,
-                          color: _brandA,
+                          color: _brandB,
                         ),
-                        const SizedBox(width: 4),
+                        SizedBox(width: 4),
                         Expanded(
                           child: Text(
                             _ipLocationText(
@@ -2196,7 +2343,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 9.8,
-                              color: Colors.grey.shade600,
+                              color: _inkMuted,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -2214,13 +2361,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 9.5,
-                        color: Colors.grey.shade500,
+                        color: _inkFaint,
                       ),
                     ),
                 ],
               ),
             ),
-            const SizedBox(width: 7),
+            SizedBox(width: 7),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -2228,27 +2375,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   AppUsage.humanBytes(
                     flow.bytes,
                   ),
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w800,
                     color: _ink,
                   ),
                 ),
-                const SizedBox(height: 2),
+                SizedBox(height: 2),
                 Text(
                   'IPv${flow.ipVersion}',
                   style: TextStyle(
                     fontSize: 9.5,
-                    color: Colors.grey.shade500,
+                    color: _inkFaint,
                   ),
                 ),
               ],
             ),
-            const SizedBox(width: 2),
+            SizedBox(width: 2),
             Icon(
               Icons.chevron_right_rounded,
               size: 17,
-              color: Colors.grey.shade400,
+              color: _inkFaint,
             ),
           ],
         ),
@@ -2311,15 +2458,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 );
 
                 return Container(
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
+                  decoration: BoxDecoration(
+                    color: _surface,
                     borderRadius: BorderRadius.vertical(
                       top: Radius.circular(28),
                     ),
                   ),
                   child: ListView(
                     controller: scrollController,
-                    padding: const EdgeInsets.fromLTRB(
+                    padding: EdgeInsets.fromLTRB(
                       20,
                       12,
                       20,
@@ -2330,11 +2477,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         child: Container(
                           width: 40,
                           height: 5,
-                          margin: const EdgeInsets.only(
+                          margin: EdgeInsets.only(
                             bottom: 20,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.grey.shade300,
+                            color: _border,
                             borderRadius: BorderRadius.circular(
                               20,
                             ),
@@ -2353,7 +2500,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   height: 54,
                                   decoration: BoxDecoration(
                                     color: protocolColor.withOpacity(
-                                      .12,
+                                      .16,
                                     ),
                                     borderRadius: BorderRadius.circular(
                                       17,
@@ -2365,7 +2512,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                     size: 27,
                                   ),
                                 ),
-                          const SizedBox(width: 14),
+                          SizedBox(width: 14),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2374,14 +2521,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   app?.appName ?? 'Unknown app',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 19,
                                     fontWeight: FontWeight.w800,
                                     color: _ink,
                                   ),
                                 ),
                                 if (app?.packageName != null) ...[
-                                  const SizedBox(
+                                  SizedBox(
                                     height: 3,
                                   ),
                                   Text(
@@ -2390,7 +2537,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontSize: 12,
-                                      color: Colors.grey.shade600,
+                                      color: _inkMuted,
                                     ),
                                   ),
                                 ],
@@ -2398,12 +2545,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             ),
                           ),
                           Container(
-                            padding: const EdgeInsets.symmetric(
+                            padding: EdgeInsets.symmetric(
                               horizontal: 12,
                               vertical: 7,
                             ),
                             decoration: BoxDecoration(
-                              color: protocolColor.withOpacity(.12),
+                              color: protocolColor.withOpacity(.16),
                               borderRadius: BorderRadius.circular(
                                 20,
                               ),
@@ -2419,14 +2566,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 22),
+                      SizedBox(height: 22),
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
+                        padding: EdgeInsets.symmetric(
                           vertical: 17,
                           horizontal: 17,
                         ),
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           gradient: LinearGradient(
                             colors: [
                               _brandA,
@@ -2439,14 +2586,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         ),
                         child: Row(
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.data_usage_rounded,
                               color: Colors.white,
                             ),
-                            const SizedBox(
+                            SizedBox(
                               width: 10,
                             ),
-                            const Text(
+                            Text(
                               'Data transferred',
                               style: TextStyle(
                                 fontSize: 13,
@@ -2454,12 +2601,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
-                            const Spacer(),
+                            Spacer(),
                             Text(
                               AppUsage.humanBytes(
                                 flow.bytes,
                               ),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w800,
                                 color: Colors.white,
@@ -2468,8 +2615,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ],
                         ),
                       ),
-                      const SizedBox(height: 22),
-                      const Text(
+                      SizedBox(height: 22),
+                      Text(
                         'Connection',
                         style: TextStyle(
                           fontSize: 14,
@@ -2477,7 +2624,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           color: _ink,
                         ),
                       ),
-                      const SizedBox(height: 10),
+                      SizedBox(height: 10),
                       _detailTile(
                         icon: Icons.dns_outlined,
                         title: 'Destination IP',
@@ -2500,16 +2647,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         title: 'IP version',
                         value: 'IPv${flow.ipVersion}',
                       ),
-                      const SizedBox(height: 22),
+                      SizedBox(height: 22),
                       Row(
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.public_rounded,
-                            color: _brandA,
+                            color: _brandB,
                             size: 20,
                           ),
-                          const SizedBox(width: 8),
-                          const Expanded(
+                          SizedBox(width: 8),
+                          Expanded(
                             child: Text(
                               'IP information',
                               style: TextStyle(
@@ -2520,36 +2667,36 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             ),
                           ),
                           if (loading)
-                            const SizedBox(
+                            SizedBox(
                               width: 17,
                               height: 17,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                color: _brandA,
+                                color: _brandB,
                               ),
                             ),
                         ],
                       ),
-                      const SizedBox(height: 10),
+                      SizedBox(height: 10),
                       if (loading && info == null)
                         Container(
-                          padding: const EdgeInsets.all(
+                          padding: EdgeInsets.all(
                             18,
                           ),
                           decoration: BoxDecoration(
-                            color: _bg,
+                            color: _surfaceAlt,
                             borderRadius: BorderRadius.circular(
                               16,
                             ),
                           ),
-                          child: const Row(
+                          child: Row(
                             children: [
                               SizedBox(
                                 width: 18,
                                 height: 18,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  color: _brandA,
+                                  color: _brandB,
                                 ),
                               ),
                               SizedBox(width: 12),
@@ -2557,6 +2704,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                 'Fetching IP information...',
                                 style: TextStyle(
                                   fontWeight: FontWeight.w600,
+                                  color: _ink,
                                 ),
                               ),
                             ],
@@ -2566,11 +2714,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         _ipInfoCard(info)
                       else
                         Container(
-                          padding: const EdgeInsets.all(
+                          padding: EdgeInsets.all(
                             18,
                           ),
                           decoration: BoxDecoration(
-                            color: _bg,
+                            color: _surfaceAlt,
                             borderRadius: BorderRadius.circular(
                               16,
                             ),
@@ -2579,16 +2727,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             children: [
                               Icon(
                                 Icons.error_outline_rounded,
-                                color: Colors.grey.shade600,
+                                color: _inkMuted,
                               ),
-                              const SizedBox(
+                              SizedBox(
                                 width: 10,
                               ),
-                              const Expanded(
+                              Expanded(
                                 child: Text(
                                   'Could not load IP information.',
                                   style: TextStyle(
                                     fontWeight: FontWeight.w600,
+                                    color: _ink,
                                   ),
                                 ),
                               ),
@@ -2602,7 +2751,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                     () {},
                                   );
                                 },
-                                child: const Text('Retry'),
+                                child: Text(
+                                  'Retry',
+                                  style: TextStyle(color: _brandB),
+                                ),
                               ),
                             ],
                           ),
@@ -2620,9 +2772,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _ipInfoCard(IpInfo info) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: _bg,
+        color: _surfaceAlt,
         borderRadius: BorderRadius.circular(18),
       ),
       child: Column(
@@ -2708,7 +2860,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     bool isLast = false,
   }) {
     return Container(
-      padding: const EdgeInsets.symmetric(
+      padding: EdgeInsets.symmetric(
         horizontal: 6,
         vertical: 11,
       ),
@@ -2717,7 +2869,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             ? null
             : Border(
                 bottom: BorderSide(
-                  color: Colors.grey.shade200,
+                  color: _border,
                 ),
               ),
       ),
@@ -2725,40 +2877,40 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: _surface,
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
               icon,
               size: 17,
-              color: _brandA,
+              color: _brandB,
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: 10),
           SizedBox(
             width: 95,
             child: Padding(
-              padding: const EdgeInsets.only(top: 5),
+              padding: EdgeInsets.only(top: 5),
               child: Text(
                 title,
                 style: TextStyle(
                   fontSize: 11.5,
-                  color: Colors.grey.shade600,
+                  color: _inkMuted,
                   fontWeight: FontWeight.w600,
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          SizedBox(width: 8),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: EdgeInsets.only(top: 4),
               child: Text(
                 value,
                 textAlign: TextAlign.right,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w700,
                   color: _ink,
@@ -2782,29 +2934,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       margin: EdgeInsets.only(
         bottom: isLast ? 0 : 10,
       ),
-      padding: const EdgeInsets.symmetric(
+      padding: EdgeInsets.symmetric(
         horizontal: 14,
         vertical: 12,
       ),
       decoration: BoxDecoration(
-        color: _bg,
+        color: _surfaceAlt,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(9),
+            padding: EdgeInsets.all(9),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: _surface,
               borderRadius: BorderRadius.circular(11),
             ),
             child: Icon(
               icon,
               size: 18,
-              color: _brandA,
+              color: _brandB,
             ),
           ),
-          const SizedBox(width: 12),
+          SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2813,14 +2965,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   title,
                   style: TextStyle(
                     fontSize: 11.5,
-                    color: Colors.grey.shade600,
+                    color: _inkMuted,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 2),
+                SizedBox(height: 2),
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14.5,
                     fontWeight: FontWeight.w700,
                     color: _ink,
@@ -2836,7 +2988,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               icon: Icon(
                 Icons.copy_rounded,
                 size: 18,
-                color: Colors.grey.shade600,
+                color: _inkMuted,
               ),
               onPressed: () async {
                 await Clipboard.setData(
@@ -2874,14 +3026,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       1,
       hue,
       .55,
-      .55,
+      .62,
     ).toColor();
 
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: color.withOpacity(.14),
+        color: color.withOpacity(.20),
         borderRadius: BorderRadius.circular(
           size * .26,
         ),
@@ -2910,10 +3062,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           Icon(
             icon,
             size: 18,
-            color: _brandA,
+            color: _brandB,
           ),
-          const SizedBox(width: 10),
-          Text(title),
+          SizedBox(width: 10),
+          Text(
+            title,
+            style: TextStyle(color: _ink),
+          ),
         ],
       ),
     );
@@ -2922,7 +3077,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _emptyState() {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(30),
+        padding: EdgeInsets.all(30),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -2939,8 +3094,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
-                          _brandA.withOpacity(.14),
-                          _brandB.withOpacity(.14),
+                          _brandA.withOpacity(.22),
+                          _brandB.withOpacity(.22),
                         ],
                       ),
                       shape: BoxShape.circle,
@@ -2948,14 +3103,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     child: Icon(
                       _running ? Icons.radar_rounded : Icons.radar_outlined,
                       size: 44,
-                      color: _brandA,
+                      color: _brandB,
                     ),
                   ),
                 );
               },
             ),
-            const SizedBox(height: 20),
-            const Text(
+            SizedBox(height: 20),
+            Text(
               'No traffic yet',
               style: TextStyle(
                 fontSize: 19,
@@ -2963,7 +3118,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 color: _ink,
               ),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: 8),
             Text(
               _selectedPackages.isEmpty
                   ? 'Go to the Setup tab, select a test app and press START.'
@@ -2973,20 +3128,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 13,
-                color: Colors.grey.shade600,
+                color: _inkMuted,
                 height: 1.4,
               ),
             ),
-            const SizedBox(height: 20),
+            SizedBox(height: 20),
             SizedBox(
               width: 180,
               height: 46,
               child: OutlinedButton.icon(
                 onPressed: () => _tabController.animateTo(0),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: _brandA,
-                  side: const BorderSide(
-                    color: _brandA,
+                  foregroundColor: _brandB,
+                  side: BorderSide(
+                    color: _brandB,
                     width: 1.4,
                   ),
                   shape: RoundedRectangleBorder(
@@ -2995,11 +3150,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
-                icon: const Icon(
+                icon: Icon(
                   Icons.tune_rounded,
                   size: 18,
                 ),
-                label: const Text(
+                label: Text(
                   'Go to Setup',
                   style: TextStyle(
                     fontWeight: FontWeight.w700,
@@ -3034,7 +3189,7 @@ class IpInfo {
   final String type;
   final String hostname;
 
-  const IpInfo({
+  IpInfo({
     required this.ip,
     required this.success,
     required this.country,
@@ -3098,7 +3253,7 @@ class IpInfo {
 }
 
 class _TabLabel extends StatelessWidget {
-  const _TabLabel({
+  _TabLabel({
     required this.icon,
     required this.label,
     this.badgeCount,
@@ -3115,22 +3270,22 @@ class _TabLabel extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, size: 16),
-        const SizedBox(width: 6),
+        SizedBox(width: 6),
         Text(label),
         if (badgeCount != null && badgeCount! > 0) ...[
-          const SizedBox(width: 6),
+          SizedBox(width: 6),
           Container(
-            padding: const EdgeInsets.symmetric(
+            padding: EdgeInsets.symmetric(
               horizontal: 6,
               vertical: 1,
             ),
             decoration: BoxDecoration(
-              color: Colors.black12,
+              color: Colors.black26,
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
               badgeCount! > 99 ? '99+' : '$badgeCount',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w800,
               ),

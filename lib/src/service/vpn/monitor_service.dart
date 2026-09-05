@@ -3,7 +3,7 @@ import 'dart:developer' as dev;
 
 import 'package:flutter/services.dart';
 
-import '../models/app_usage.dart';
+import '../../model/vpn/app_usage.dart';
 
 class MonitorService {
   static const _methodChannel = MethodChannel('apptrack/monitor');

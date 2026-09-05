@@ -1,26 +1,112 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Network -->
+    <!-- =========================
+         Network
+         ========================= -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
-    <!-- Foreground service -->
+    <!-- =========================
+         Bluetooth
+         ========================= -->
+    <!-- Android 12+ -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+    <!-- Android 11 and lower -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+
+    <!-- =========================
+         Location
+         Required by some Wi-Fi/Bluetooth
+         operations depending on Android version
+         ========================= -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Android 13+ Wi-Fi -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+
+    <!-- =========================
+         Phone / Cell information
+         ========================= -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CELL_BROADCASTS" />
+
+    <!-- =========================
+         Foreground Service
+         ========================= -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Floating overlay (PIP-style live traffic panel) -->
+    <!-- =========================
+         Overlay
+         ========================= -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Installed launcher apps -->
+    <!-- =========================
+         System settings
+         ========================= -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
+    <!-- =========================
+         Hardware Features
+         ========================= -->
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+
+    <!-- =========================
+         Package / Intent Queries
+         ========================= -->
     <queries>
+
+        <!-- Launcher apps -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+
+        <!-- Bluetooth -->
+        <intent>
+            <action android:name="android.bluetooth.adapter.action.REQUEST_ENABLE" />
+        </intent>
+
+        <!-- Google Play Services -->
+        <package android:name="com.google.android.gms" />
+
+        <!-- Play Store -->
+        <package android:name="com.android.vending" />
+
+        <!-- Chrome -->
+        <package android:name="com.android.chrome" />
+
+        <!-- HTTP -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+
+        <!-- HTTPS -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+
     </queries>
 
     <application
@@ -28,9 +114,13 @@
         android:label="AppTrack"
         android:icon="@android:drawable/sym_def_app_icon"
         android:allowBackup="true"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
-        <!-- Flutter -->
+        <!-- =========================
+             Flutter Main Activity
+             ========================= -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,10 +141,9 @@
 
         </activity>
 
-        <!--
-            Old NetworkStats based usage service.
-            Keep this only if your Flutter code still uses it.
-        -->
+        <!-- =========================
+             AppTrack Usage Service
+             ========================= -->
         <service
             android:name=".AppTrackUsageService"
             android:exported="false"
@@ -66,12 +155,9 @@
 
         </service>
 
-        <!--
-            AppTrack local VPN/TUN monitor.
-
-            BIND_VPN_SERVICE is mandatory.
-            Android calls VpnService.onBind() internally.
-        -->
+        <!-- =========================
+             AppTrack VPN Service
+             ========================= -->
         <service
             android:name=".AppTrackVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
@@ -88,17 +174,9 @@
 
         </service>
 
-        <!--
-            SOCKS5 relay, running in an ISOLATED process (":socks5").
-
-            hev-socks5-server.so and hev-socks5-tunnel.so both statically
-            link the same internal coroutine runtime. Loaded together in
-            one process their global state collides and kills whichever
-            one started first within a few hundred ms. Running this one
-            in its own process gives it a separate address space, so
-            there's no collision. They still talk over TCP loopback
-            (127.0.0.1:1080) exactly as before.
-        -->
+        <!-- =========================
+             SOCKS5 Process
+             ========================= -->
         <service
             android:name=".Socks5ProcessService"
             android:exported="false"
@@ -111,16 +189,14 @@
 
         </service>
 
-        <!--
-            Floating "PIP-style" overlay showing live captured traffic on
-            top of other apps (similar to Reqable's debug panel).
-            Requires SYSTEM_ALERT_WINDOW, requested at runtime.
-        -->
+        <!-- =========================
+             Overlay Service
+             ========================= -->
         <service
             android:name=".OverlayService"
             android:exported="false" />
 
-        <!-- Flutter embedding v2 -->
+        <!-- Flutter Embedding -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

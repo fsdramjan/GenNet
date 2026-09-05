@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
-import '../models/app_usage.dart';
+import '../../model/vpn/app_usage.dart';
 
 class ExportService {
   Future<Directory> _exportDirectory() async {

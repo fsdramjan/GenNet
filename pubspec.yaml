@@ -10,6 +10,22 @@ dependencies:
   flutter:
     sdk: flutter
   path_provider: ^2.1.4
+  http: ^1.2.0
+  get:
+  dart_ping: ^9.0.0 # Check pub.dev for the absolute latest version, but this is recent
+  network_info_plus: ^6.1.4
+  fl_chart: ^0.68.0
+  permission_handler: ^11.3.0
+
+  lan_scanner:
+
+  percent_indicator:
+  network_port_scanner: ^1.0.1
+
+  network_tools_flutter:
+  shared_preferences: ^2.3.2
+  wifi_scan: ^0.4.0
+  share_plus: ^7.2.2
 
 dev_dependencies:
   flutter_test:
@@ -18,3 +34,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/img/
+    - assets/icons/
