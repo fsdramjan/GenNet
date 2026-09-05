@@ -1,0 +1,26 @@
+./obj/local/x86_64/objs/hev-socks5-server/src/core/src/hev-socks5-client-tcp.o: \
+  jni/src/core/src/hev-socks5-client-tcp.c \
+  jni/third-part/hev-task-system/include/hev-memory-allocator.h \
+  jni/src/core/src/hev-socks5-misc-priv.h \
+  jni/third-part/hev-task-system/include/hev-task.h \
+  jni/third-part/hev-task-system/include/hev-task-io.h \
+  jni/src/core/src/hev-socks5-misc.h jni/src/core/src/hev-socks5-proto.h \
+  jni/src/core/src/hev-socks5-logger-priv.h \
+  jni/src/core/src/hev-socks5-logger.h \
+  jni/src/core/src/hev-socks5-client-tcp.h \
+  jni/src/core/src/hev-socks5-tcp.h jni/src/core/src/hev-socks5-client.h \
+  jni/src/core/src/hev-socks5.h \
+  jni/third-part/hev-task-system/include/hev-object.h
+jni/third-part/hev-task-system/include/hev-memory-allocator.h:
+jni/src/core/src/hev-socks5-misc-priv.h:
+jni/third-part/hev-task-system/include/hev-task.h:
+jni/third-part/hev-task-system/include/hev-task-io.h:
+jni/src/core/src/hev-socks5-misc.h:
+jni/src/core/src/hev-socks5-proto.h:
+jni/src/core/src/hev-socks5-logger-priv.h:
+jni/src/core/src/hev-socks5-logger.h:
+jni/src/core/src/hev-socks5-client-tcp.h:
+jni/src/core/src/hev-socks5-tcp.h:
+jni/src/core/src/hev-socks5-client.h:
+jni/src/core/src/hev-socks5.h:
+jni/third-part/hev-task-system/include/hev-object.h:

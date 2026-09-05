@@ -1,0 +1,19 @@
+./obj/local/arm64-v8a/objs/hev-socks5-server/src/core/src/hev-socks5.o: \
+  jni/src/core/src/hev-socks5.c \
+  jni/third-part/hev-task-system/include/hev-task.h \
+  jni/third-part/hev-task-system/include/hev-task-io.h \
+  jni/third-part/hev-task-system/include/hev-task-io-socket.h \
+  jni/third-part/hev-task-system/include/hev-task-dns.h \
+  jni/third-part/hev-task-system/include/hev-memory-allocator.h \
+  jni/src/core/src/hev-socks5-logger-priv.h \
+  jni/src/core/src/hev-socks5-logger.h jni/src/core/src/hev-socks5.h \
+  jni/third-part/hev-task-system/include/hev-object.h
+jni/third-part/hev-task-system/include/hev-task.h:
+jni/third-part/hev-task-system/include/hev-task-io.h:
+jni/third-part/hev-task-system/include/hev-task-io-socket.h:
+jni/third-part/hev-task-system/include/hev-task-dns.h:
+jni/third-part/hev-task-system/include/hev-memory-allocator.h:
+jni/src/core/src/hev-socks5-logger-priv.h:
+jni/src/core/src/hev-socks5-logger.h:
+jni/src/core/src/hev-socks5.h:
+jni/third-part/hev-task-system/include/hev-object.h:
