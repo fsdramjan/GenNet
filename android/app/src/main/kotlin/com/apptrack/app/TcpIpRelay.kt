@@ -66,6 +66,37 @@ object TcpIpRelay {
     @Volatile
     var writeToTun: ((ByteArray, Int) -> Unit)? = null
 
+    /** Callback (VpnService.protect) so generic UDP sockets bypass the
+     *  VPN's own routing and reach the real internet directly -- SOCKS5
+     *  is TCP-only, so UDP (game traffic, QUIC, etc.) can't go through
+     *  the same local proxy path TCP uses. */
+    @Volatile
+    var protectSocket: ((java.net.DatagramSocket) -> Boolean)? = null
+
+    /** Same idea as protectSocket but for TCP (java.net.Socket) --
+     *  VpnService.protect() has separate overloads per socket type. */
+    @Volatile
+    var protectTcpSocket: ((Socket) -> Boolean)? = null
+
+    private data class UdpKey(
+        val srcIp: String,
+        val srcPort: Int,
+        val dstIp: String,
+        val dstPort: Int
+    )
+
+    private class UdpSession(
+        val key: UdpKey,
+        val socket: java.net.DatagramSocket
+    ) {
+        @Volatile var lastActive = System.currentTimeMillis()
+    }
+
+    private val udpSessions =
+        ConcurrentHashMap<UdpKey, UdpSession>()
+
+    private const val UDP_IDLE_TIMEOUT_MS = 60_000L
+
     private data class ConnKey(
         val srcIp: String,
         val srcPort: Int,
@@ -89,6 +120,19 @@ object TcpIpRelay {
         @Volatile var theirNextSeq: Long = 0L
 
         @Volatile var closing = false
+
+        // Outbound data (app -> destination) is queued here instead of
+        // written directly on the shared TUN-read thread -- a slow or
+        // stalled socket write on ANY one connection must never block
+        // every other connection's traffic. A dedicated writer thread
+        // per connection drains this.
+        val writeQueue =
+            java.util.concurrent.LinkedBlockingQueue<ByteArray>()
+
+        // Diagnostics: how far did this connection actually get.
+        @Volatile var bytesFromApp = 0L
+        @Volatile var bytesToApp = 0L
+        @Volatile var closeReason = "unknown"
     }
 
     private val connections =
@@ -99,6 +143,11 @@ object TcpIpRelay {
             try { tcb.socket?.close() } catch (_: Throwable) {}
         }
         connections.clear()
+
+        for (session in udpSessions.values) {
+            try { session.socket.close() } catch (_: Throwable) {}
+        }
+        udpSessions.clear()
     }
 
     // ================================================================
@@ -127,7 +176,7 @@ object TcpIpRelay {
 
             when (protocol) {
                 6 -> handleTcp(buf, len, ihl, srcIp, dstIp, cm)
-                17 -> handleUdp(buf, len, ihl, srcIp, dstIp)
+                17 -> handleUdp(buf, len, ihl, srcIp, dstIp, cm)
                 else -> { /* ignore ICMP etc in v1 */ }
             }
 
@@ -141,7 +190,8 @@ object TcpIpRelay {
     // ================================================================
 
     private fun handleUdp(
-        buf: ByteArray, len: Int, ihl: Int, srcIp: String, dstIp: String
+        buf: ByteArray, len: Int, ihl: Int, srcIp: String, dstIp: String,
+        cm: android.net.ConnectivityManager?
     ) {
         if (len < ihl + 8) return
 
@@ -151,18 +201,144 @@ object TcpIpRelay {
         val payloadOff = ihl + 8
         val payloadLen = (udpLen - 8).coerceAtMost(len - payloadOff)
 
-        if (dstPort != 53 || payloadLen <= 0) return // only DNS handled
+        if (payloadLen <= 0) return
+
+        if (dstPort == 53) {
+            executor.execute {
+                try {
+                    val response = resolveDns(buf, payloadOff, payloadLen)
+                    if (response != null) {
+                        sendUdpReply(
+                            srcIp, srcPort, dstIp, dstPort, response
+                        )
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "DNS resolve failed", e)
+                }
+            }
+            return
+        }
+
+        relayGenericUdp(
+            buf, payloadOff, payloadLen, srcIp, srcPort, dstIp, dstPort, cm
+        )
+    }
+
+    /**
+     * Generic UDP NAT relay: forwards each UDP datagram to its real
+     * destination via a protect()'d DatagramSocket (bypassing our own
+     * VPN routing so it reaches the real internet directly), and relays
+     * any replies back into the TUN. One socket per (src,dst) 4-tuple,
+     * reused for the lifetime of that "session" (idle-timed-out after
+     * UDP_IDLE_TIMEOUT_MS of no activity, since UDP has no explicit
+     * close). This is what carries most real-time game traffic, QUIC,
+     * voice/video, etc. -- traffic DNS-style special-casing doesn't
+     * cover.
+     */
+    private fun relayGenericUdp(
+        buf: ByteArray, payloadOff: Int, payloadLen: Int,
+        srcIp: String, srcPort: Int, dstIp: String, dstPort: Int,
+        cm: android.net.ConnectivityManager?
+    ) {
+        val key = UdpKey(srcIp, srcPort, dstIp, dstPort)
+        val payload = buf.copyOfRange(payloadOff, payloadOff + payloadLen)
+
+        var session = udpSessions[key]
+
+        if (session == null) {
+
+            val protect = protectSocket
+
+            if (protect == null) {
+                Log.w(TAG, "relayGenericUdp: protectSocket not set, dropping")
+                return
+            }
+
+            val socket = try {
+                java.net.DatagramSocket(null).apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(0))
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "UDP socket create failed for $key", e)
+                return
+            }
+
+            if (!protect(socket)) {
+                Log.w(TAG, "protect() failed for UDP socket, $key")
+                try { socket.close() } catch (_: Throwable) {}
+                return
+            }
+
+            val newSession = UdpSession(key, socket)
+            udpSessions[key] = newSession
+            session = newSession
+
+            Log.i(TAG, "UDP open: $srcIp:$srcPort -> $dstIp:$dstPort")
+
+            val ownerUid = resolveOwnerUid(
+                srcIp, srcPort, dstIp, dstPort,
+                android.system.OsConstants.IPPROTO_UDP, cm
+            )
+
+            FlowStore.add(
+                destinationIp = dstIp,
+                destinationPort = dstPort,
+                protocol = "UDP",
+                bytes = 1,
+                ipVersion = 4,
+                uid = ownerUid
+            )
+
+            // Reader thread: relay replies back into the TUN.
+            Thread(
+                {
+                    val recvBuf = ByteArray(65536)
+
+                    try {
+                        socket.soTimeout = UDP_IDLE_TIMEOUT_MS.toInt()
+
+                        while (!socket.isClosed) {
+                            val packet = java.net.DatagramPacket(recvBuf, recvBuf.size)
+
+                            try {
+                                socket.receive(packet)
+                            } catch (e: java.net.SocketTimeoutException) {
+                                break // idle timeout -- end this session
+                            } catch (e: Throwable) {
+                                break
+                            }
+
+                            newSession.lastActive = System.currentTimeMillis()
+
+                            val replyPacket = buildUdpPacket(
+                                fromIp = dstIp, fromPort = dstPort,
+                                toIp = srcIp, toPort = srcPort,
+                                payload = packet.data.copyOfRange(0, packet.length)
+                            )
+                            writeToTun?.invoke(replyPacket, replyPacket.size)
+                        }
+                    } finally {
+                        udpSessions.remove(key)
+                        try { socket.close() } catch (_: Throwable) {}
+                        Log.i(TAG, "UDP closed: $srcIp:$srcPort -> $dstIp:$dstPort")
+                    }
+                },
+                "AppTrack-UdpConn"
+            ).start()
+        }
+
+        session.lastActive = System.currentTimeMillis()
 
         executor.execute {
             try {
-                val response = resolveDns(buf, payloadOff, payloadLen)
-                if (response != null) {
-                    sendUdpReply(
-                        srcIp, srcPort, dstIp, dstPort, response
-                    )
-                }
+                val packet = java.net.DatagramPacket(
+                    payload, payload.size,
+                    java.net.InetAddress.getByName(dstIp), dstPort
+                )
+                session.socket.send(packet)
             } catch (e: Throwable) {
-                Log.w(TAG, "DNS resolve failed", e)
+                Log.w(TAG, "UDP send failed for $key", e)
             }
         }
     }
@@ -352,26 +528,64 @@ object TcpIpRelay {
         }
 
         if ((flags and RST) != 0) {
-            closeConnection(tcb, alsoSendFin = false)
+            closeConnection(tcb, alsoSendFin = false, reason = "client sent RST")
             return
         }
 
         if ((flags and FIN) != 0) {
             tcb.theirNextSeq = seq + 1
             sendAck(tcb)
-            closeConnection(tcb, alsoSendFin = true)
+            closeConnection(tcb, alsoSendFin = true, reason = "client sent FIN")
             return
         }
 
         if (payloadLen > 0) {
-            val socket = tcb.socket
-            if (socket != null && tcb.state == TcpState.ESTABLISHED) {
-                try {
-                    socket.getOutputStream().write(buf, payloadOff, payloadLen)
-                    tcb.theirNextSeq = seq + payloadLen
-                    sendAck(tcb)
-                } catch (e: IOException) {
-                    closeConnection(tcb, alsoSendFin = true)
+            if (tcb.state == TcpState.ESTABLISHED) {
+
+                when {
+                    // Exactly the data we expect next -- normal case.
+                    seq == tcb.theirNextSeq -> {
+                        // Non-blocking: just hand off to this connection's
+                        // own writer thread. Never blocks the shared
+                        // TUN-read thread, regardless of how slow this
+                        // particular socket is.
+                        tcb.writeQueue.offer(
+                            buf.copyOfRange(payloadOff, payloadOff + payloadLen)
+                        )
+                        tcb.bytesFromApp += payloadLen
+                        tcb.theirNextSeq = seq + payloadLen
+                        sendAck(tcb)
+                    }
+
+                    // A (full or partial) retransmission of data we've
+                    // already forwarded -- our earlier ACK likely didn't
+                    // arrive in time. MUST NOT re-forward this, or the
+                    // destination sees duplicated/corrupted bytes. Just
+                    // re-ACK our current position so the client knows
+                    // exactly what we actually have.
+                    seq < tcb.theirNextSeq -> {
+                        Log.i(
+                            TAG,
+                            "Ignoring retransmitted segment for ${tcb.key}: " +
+                                "seq=$seq < expected=${tcb.theirNextSeq}"
+                        )
+                        sendAck(tcb)
+                    }
+
+                    // An out-of-order segment (a gap before it that
+                    // hasn't arrived yet). Without a reassembly buffer,
+                    // forwarding this now would also corrupt ordering --
+                    // re-ACK our current position (duplicate ACK) so the
+                    // client's own retransmission logic kicks in for the
+                    // missing earlier segment.
+                    else -> {
+                        Log.w(
+                            TAG,
+                            "Out-of-order segment for ${tcb.key}: " +
+                                "seq=$seq > expected=${tcb.theirNextSeq}, dropping"
+                        )
+                        sendAck(tcb)
+                    }
                 }
             }
         }
@@ -384,7 +598,17 @@ object TcpIpRelay {
      * any reason -- capture still works, just without the app icon/name
      * for that entry.
      */
-    private fun resolveOwnerUid(key: ConnKey, cm: android.net.ConnectivityManager?): Int {
+    private fun resolveOwnerUid(key: ConnKey, cm: android.net.ConnectivityManager?): Int =
+        resolveOwnerUid(
+            key.srcIp, key.srcPort, key.dstIp, key.dstPort,
+            android.system.OsConstants.IPPROTO_TCP, cm
+        )
+
+    private fun resolveOwnerUid(
+        srcIp: String, srcPort: Int, dstIp: String, dstPort: Int,
+        ipProto: Int,
+        cm: android.net.ConnectivityManager?
+    ): Int {
 
         if (cm == null) {
             Log.w(TAG, "resolveOwnerUid: connectivityManager param is null")
@@ -399,26 +623,61 @@ object TcpIpRelay {
         return try {
 
             val local =
-                java.net.InetSocketAddress(key.srcIp, key.srcPort)
+                java.net.InetSocketAddress(srcIp, srcPort)
 
             val remote =
-                java.net.InetSocketAddress(key.dstIp, key.dstPort)
+                java.net.InetSocketAddress(dstIp, dstPort)
 
             val uid =
                 cm.getConnectionOwnerUid(
-                    android.system.OsConstants.IPPROTO_TCP,
+                    ipProto,
                     local,
                     remote
                 )
 
-            Log.i(TAG, "resolveOwnerUid: $key -> uid=$uid (INVALID_UID=${android.os.Process.INVALID_UID})")
+            Log.i(TAG, "resolveOwnerUid: $srcIp:$srcPort->$dstIp:$dstPort proto=$ipProto -> uid=$uid")
 
             if (uid == android.os.Process.INVALID_UID) -1 else uid
 
         } catch (e: Throwable) {
-            Log.w(TAG, "getConnectionOwnerUid failed for $key", e)
+            Log.w(TAG, "getConnectionOwnerUid failed for $srcIp:$srcPort->$dstIp:$dstPort", e)
             -1
         }
+    }
+
+    /**
+     * Drains this connection's outbound write queue and writes to its
+     * socket -- runs on its own thread so a slow/stalled write here
+     * never blocks the shared TUN-read thread (which just enqueues and
+     * moves on to the next packet, possibly for a totally different
+     * connection).
+     */
+    private fun startWriterThread(tcb: Tcb, socket: Socket) {
+        Thread(
+            {
+                val out = socket.getOutputStream()
+
+                try {
+                    while (!tcb.closing) {
+                        val data = try {
+                            tcb.writeQueue.poll(1, java.util.concurrent.TimeUnit.SECONDS)
+                        } catch (e: InterruptedException) {
+                            null
+                        } ?: continue
+
+                        try {
+                            out.write(data)
+                        } catch (e: IOException) {
+                            closeConnection(tcb, alsoSendFin = true, reason = "write to destination failed: ${e.message}")
+                            break
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Writer thread failed for ${tcb.key}", e)
+                }
+            },
+            "AppTrack-TcpWriter"
+        ).start()
     }
 
     private fun openConnection(
@@ -456,10 +715,20 @@ object TcpIpRelay {
                 socket.tcpNoDelay = true
                 socket.receiveBufferSize = 65536
                 socket.sendBufferSize = 65536
+
+                // Direct connection to the real destination, bypassing
+                // our VPN's own routing via protect() -- no SOCKS5 hop.
+                // Matches how proven capture apps (PCAPdroid, NetGuard)
+                // actually connect: fewer moving parts, no extra latency
+                // or handshake quirks from an intermediate local proxy.
+                val protect = protectTcpSocket
+                if (protect == null || !protect(socket)) {
+                    throw IOException("protect() failed or unavailable for TCP socket")
+                }
+
                 socket.connect(
-                    java.net.InetSocketAddress(SOCKS5_HOST, SOCKS5_PORT), 8000
+                    java.net.InetSocketAddress(key.dstIp, key.dstPort), 8000
                 )
-                socks5Connect(socket, key.dstIp, key.dstPort)
 
                 tcb.socket = socket
                 tcb.state = TcpState.ESTABLISHED
@@ -468,6 +737,8 @@ object TcpIpRelay {
                 sendSynAck(tcb)
 
                 Log.i(TAG, "TCP open: ${key.srcIp}:${key.srcPort} -> ${key.dstIp}:${key.dstPort}")
+
+                startWriterThread(tcb, socket)
 
                 val input = socket.getInputStream()
                 val buf = ByteArray(65536)
@@ -478,7 +749,10 @@ object TcpIpRelay {
 
                 while (!tcb.closing) {
                     val n = try { input.read(buf) } catch (e: IOException) { -1 }
-                    if (n <= 0) break
+                    if (n <= 0) {
+                        Log.i(TAG, "TCP: destination closed/errored for $key (read returned $n)")
+                        break
+                    }
 
                     var offset = 0
                     while (offset < n) {
@@ -495,7 +769,7 @@ object TcpIpRelay {
                 return@execute
             }
 
-            closeConnection(tcb, alsoSendFin = true)
+            closeConnection(tcb, alsoSendFin = true, reason = "destination read loop ended")
         }
     }
 
@@ -541,20 +815,39 @@ object TcpIpRelay {
         }
     }
 
-    private fun closeConnection(tcb: Tcb, alsoSendFin: Boolean) {
+    private fun closeConnection(tcb: Tcb, alsoSendFin: Boolean, reason: String = "unspecified") {
         if (tcb.closing) return
         tcb.closing = true
+        tcb.closeReason = reason
         try { tcb.socket?.close() } catch (_: Throwable) {}
         if (alsoSendFin) {
             try { sendFin(tcb) } catch (_: Throwable) {}
         }
         connections.remove(tcb.key)
+
+        Log.i(
+            TAG,
+            "TCP close: ${tcb.key.srcIp}:${tcb.key.srcPort} -> " +
+                "${tcb.key.dstIp}:${tcb.key.dstPort} reason=$reason " +
+                "bytesFromApp=${tcb.bytesFromApp} bytesToApp=${tcb.bytesToApp}"
+        )
     }
 
     // ---- packet builders (TCP) ----
 
-    private fun sendSynAck(tcb: Tcb) =
-        sendTcpSegment(tcb, SYN or ACK, ByteArray(0), advanceMySeq = 1)
+    private fun sendSynAck(tcb: Tcb) {
+        // A real device's TCP stack always advertises an MSS option on
+        // SYN/SYN-ACK. Ours never did -- some server-side anti-cheat or
+        // anti-proxy fingerprinting could plausibly reject a handshake
+        // that looks unlike a normal client's. 1400 is a conservative,
+        // widely-used safe value for tunnelled/VPN connections.
+        val mssOption = byteArrayOf(
+            0x02, 0x04, // kind=MSS, length=4
+            ((1400 shr 8) and 0xFF).toByte(),
+            (1400 and 0xFF).toByte()
+        )
+        sendTcpSegment(tcb, SYN or ACK, ByteArray(0), advanceMySeq = 1, options = mssOption)
+    }
 
     private fun sendAck(tcb: Tcb) =
         sendTcpSegment(tcb, ACK, ByteArray(0), advanceMySeq = 0)
@@ -562,8 +855,10 @@ object TcpIpRelay {
     private fun sendFin(tcb: Tcb) =
         sendTcpSegment(tcb, FIN or ACK, ByteArray(0), advanceMySeq = 1)
 
-    private fun sendData(tcb: Tcb, data: ByteArray, offset: Int, len: Int) =
+    private fun sendData(tcb: Tcb, data: ByteArray, offset: Int, len: Int) {
+        tcb.bytesToApp += len
         sendTcpSegment(tcb, PSH or ACK, data.copyOfRange(offset, offset + len), advanceMySeq = len)
+    }
 
     private fun sendRst(key: ConnKey, seq: Long) {
         val buf = buildTcpPacket(
@@ -575,13 +870,14 @@ object TcpIpRelay {
     }
 
     private fun sendTcpSegment(
-        tcb: Tcb, flags: Int, payload: ByteArray, advanceMySeq: Int
+        tcb: Tcb, flags: Int, payload: ByteArray, advanceMySeq: Int,
+        options: ByteArray = ByteArray(0)
     ) {
         val buf = buildTcpPacket(
             fromIp = tcb.key.dstIp, fromPort = tcb.key.dstPort,
             toIp = tcb.key.srcIp, toPort = tcb.key.srcPort,
             seq = tcb.mySeq, ack = tcb.theirNextSeq,
-            flags = flags, payload = payload
+            flags = flags, payload = payload, options = options
         )
         writeToTun?.invoke(buf, buf.size)
         tcb.mySeq += advanceMySeq
@@ -591,10 +887,13 @@ object TcpIpRelay {
         fromIp: String, fromPort: Int,
         toIp: String, toPort: Int,
         seq: Long, ack: Long,
-        flags: Int, payload: ByteArray
+        flags: Int, payload: ByteArray,
+        options: ByteArray = ByteArray(0)
     ): ByteArray {
 
-        val tcpLen = 20 + payload.size
+        val optionsLen = options.size // must be a multiple of 4
+        val tcpHeaderLen = 20 + optionsLen
+        val tcpLen = tcpHeaderLen + payload.size
         val totalLen = 20 + tcpLen
         val buf = ByteArray(totalLen)
 
@@ -616,13 +915,17 @@ object TcpIpRelay {
         writeU16(buf, 22, toPort)
         writeU32(buf, 24, seq)
         writeU32(buf, 28, ack)
-        buf[32] = (5 shl 4).toByte() // data offset = 5 (no options)
+        buf[32] = (((tcpHeaderLen / 4) shl 4) and 0xFF).toByte() // data offset
         buf[33] = flags.toByte()
         writeU16(buf, 34, 65535) // window
         writeU16(buf, 36, 0) // checksum placeholder
         writeU16(buf, 38, 0) // urgent pointer
 
-        System.arraycopy(payload, 0, buf, 40, payload.size)
+        if (optionsLen > 0) {
+            System.arraycopy(options, 0, buf, 40, optionsLen)
+        }
+
+        System.arraycopy(payload, 0, buf, 20 + tcpHeaderLen, payload.size)
 
         val tcpChecksum = tcpChecksum(buf, fromIp, toIp, 20, tcpLen)
         writeU16(buf, 36, tcpChecksum)

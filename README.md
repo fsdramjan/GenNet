@@ -10,23 +10,29 @@ It uses Android's `VpnService` to observe network traffic locally and presents l
 - 🔎 Search traffic by IP, country, ISP, or port
 - 🌐 Display destination IP addresses and ports
 - 📱 Show the application associated with network traffic
-- 🌍 Display IP geolocation information
+- 🌍 Display IP geolocation and ISP/organization information
+- 🫧 Floating overlay (PIP-style) showing live traffic on top of any app, including the company/ISP behind each connection
 - 🔄 Live traffic statistics
 - 🧹 Clear live traffic entries
 - 📤 Export traffic information
 - 🧩 TCP, UDP, and ICMP traffic filters
+- 🎮 Custom in-process TCP/IP relay for reliable per-app capture — internet access (including apps and games with non-HTTP, custom-protocol traffic) keeps working normally while monitoring
 - ⚙️ Setup and monitoring controls
 - 🎨 Clean Flutter UI with Android native integration
 
 ## Screenshots
 
-### App UI
+### Setup
 
-![App UI](UI/05092026.jpg)
+![Setup](UI/setup.jpg)
 
 ### Live Traffic
 
-![Live Traffic](UI/05092026_1.jpg)
+![Live Traffic](UI/trafficLog.jpg)
+
+### Floating Overlay (PIP)
+
+![Floating overlay](UI/pip.jpg)
 
 ## Tech Stack
 
@@ -34,7 +40,8 @@ It uses Android's `VpnService` to observe network traffic locally and presents l
 - Dart
 - Kotlin
 - Android `VpnService`
-- Native Android integration
+- Custom userspace TCP/IP relay (packet parsing, connection handling, DNS resolution) for capture + connectivity
+- Native Android integration (floating overlay window, IP/ISP lookups)
 - MethodChannel / platform integration
 
 ## Project Structure
@@ -59,8 +66,9 @@ hev-socks5-server/
 └── ...
 
 UI/
-├── apptrack_ui.png
-└── live_traffic.png
+├── setup.jpg
+├── trafficLog.jpg
+└── pip.jpg
 ```
 
 ## Getting Started
@@ -92,10 +100,13 @@ The application requires Android VPN functionality through `android.net.VpnServi
 
 When monitoring starts, Android may display a VPN permission/system confirmation dialog. This is expected behavior for applications using `VpnService`.
 
+The floating overlay (PIP) feature additionally requires the "Display over other apps" permission, requested at runtime when first enabled.
+
 ## Notes
 
 - This project is intended for network traffic monitoring on the user's own device.
 - Some functionality depends on Android platform permissions and native components.
+- Internet connectivity for monitored apps (including apps using non-standard/custom protocols, such as some games) is handled by an in-app TCP/IP relay rather than a full native tunnel library.
 - Do not commit API keys, credentials, `.env` files, generated build files, or other sensitive information.
 
 ## License

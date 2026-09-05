@@ -281,6 +281,98 @@ class MainActivity : FlutterActivity() {
                 }
 
                 // ---------------------------------------------------------
+                // FLOATING OVERLAY (PIP-style live traffic panel)
+                // ---------------------------------------------------------
+
+                "hasOverlayPermission" -> {
+
+                    result.success(
+                        hasOverlayPermission()
+                    )
+                }
+
+                "openOverlayPermission" -> {
+
+                    openOverlayPermission()
+
+                    result.success(
+                        null
+                    )
+                }
+
+                "startOverlay" -> {
+
+                    if (!hasOverlayPermission()) {
+
+                        result.error(
+                            "OVERLAY_PERMISSION_REQUIRED",
+                            "Draw-over-other-apps permission not granted",
+                            null
+                        )
+
+                    } else {
+
+                        try {
+
+                            startService(
+                                Intent(
+                                    this,
+                                    OverlayService::class.java
+                                ).apply {
+                                    action = OverlayService.ACTION_START
+                                }
+                            )
+
+                            result.success(
+                                null
+                            )
+
+                        } catch (e: Throwable) {
+
+                            Log.e(
+                                TAG,
+                                "Failed to start overlay",
+                                e
+                            )
+
+                            result.error(
+                                "OVERLAY_START_ERROR",
+                                e.message
+                                    ?: "Failed to start overlay",
+                                null
+                            )
+                        }
+                    }
+                }
+
+                "stopOverlay" -> {
+
+                    try {
+
+                        startService(
+                            Intent(
+                                this,
+                                OverlayService::class.java
+                            ).apply {
+                                action = OverlayService.ACTION_STOP
+                            }
+                        )
+
+                    } catch (e: Throwable) {
+
+                        Log.w(
+                            TAG,
+                            "Failed to stop overlay",
+                            e
+                        )
+                    }
+
+                    result.success(
+                        null
+                    )
+                }
+
+                // ---------------------------------------------------------
                 // UNKNOWN METHOD
                 // ---------------------------------------------------------
 
@@ -560,6 +652,26 @@ class MainActivity : FlutterActivity() {
             Log.e(
                 TAG,
                 "Failed to stop VPN service",
+                e
+            )
+        }
+
+        try {
+
+            startService(
+                Intent(
+                    this,
+                    OverlayService::class.java
+                ).apply {
+                    action = OverlayService.ACTION_STOP
+                }
+            )
+
+        } catch (e: Throwable) {
+
+            Log.w(
+                TAG,
+                "Failed to stop overlay",
                 e
             )
         }
@@ -875,6 +987,37 @@ class MainActivity : FlutterActivity() {
     }
 
     // =====================================================================
+    // OVERLAY PERMISSION (draw over other apps)
+    // =====================================================================
+
+    private fun hasOverlayPermission(): Boolean {
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+            Settings.canDrawOverlays(this)
+
+        } else {
+
+            true
+        }
+    }
+
+    private fun openOverlayPermission() {
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse(
+                        "package:$packageName"
+                    )
+                )
+            )
+        }
+    }
+
+    // =====================================================================
     // USAGE ACCESS
     // =====================================================================
 
@@ -1091,6 +1234,44 @@ class MainActivity : FlutterActivity() {
             null
 
         super.onDestroy()
+    }
+
+    // =====================================================================
+    // AUTO-SHOW OVERLAY ON BACKGROUND
+    // =====================================================================
+    //
+    // While a VPN monitoring session is running, show the floating panel
+    // automatically the moment this app leaves the foreground (so the
+    // user can immediately see live traffic while switching to the game/
+    // app being monitored), and hide it again once they come back to
+    // AppTrack itself (the in-app Traffic screen is the better view then).
+
+    override fun onPause() {
+        super.onPause()
+
+        if (AppTrackVpnService.isRunning && hasOverlayPermission()) {
+
+            try {
+                startService(
+                    Intent(
+                        this,
+                        OverlayService::class.java
+                    ).apply {
+                        action = OverlayService.ACTION_START
+                    }
+                )
+            } catch (e: Throwable) {
+                Log.w(TAG, "Auto-start overlay failed", e)
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The overlay is intentionally left running here -- it now has
+        // its own close button, so it stays visible until the user
+        // explicitly closes it (or the VPN session stops), rather than
+        // disappearing just because AppTrack came back to the foreground.
     }
 
     // =====================================================================

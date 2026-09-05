@@ -12,6 +12,9 @@
     <!-- Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Floating overlay (PIP-style live traffic panel) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Installed launcher apps -->
     <queries>
         <intent>
@@ -107,6 +110,15 @@
                 android:value="local socks5 relay for on-device traffic monitoring" />
 
         </service>
+
+        <!--
+            Floating "PIP-style" overlay showing live captured traffic on
+            top of other apps (similar to Reqable's debug panel).
+            Requires SYSTEM_ALERT_WINDOW, requested at runtime.
+        -->
+        <service
+            android:name=".OverlayService"
+            android:exported="false" />
 
         <!-- Flutter embedding v2 -->
         <meta-data

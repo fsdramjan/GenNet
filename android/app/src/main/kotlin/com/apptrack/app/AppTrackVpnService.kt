@@ -25,6 +25,12 @@ class AppTrackVpnService : VpnService() {
         const val EXTRA_PACKAGES =
             "packages"
 
+        // Lets MainActivity check "is the VPN session currently running"
+        // without binding to this service -- used to decide whether to
+        // auto-show the floating overlay when the app is backgrounded.
+        @Volatile
+        var isRunning = false
+
         private const val TAG =
             "AppTrackVPN"
 
@@ -269,6 +275,7 @@ class AppTrackVpnService : VpnService() {
 
             vpnInterface = tun
             vpnRunning = true
+            isRunning = true
 
             FlowStore.clear()
             AppUsageStore.clear()
@@ -276,11 +283,12 @@ class AppTrackVpnService : VpnService() {
             Log.i(TAG, "========== VPN ESTABLISHED ==========")
             Log.i(TAG, "TUN fd=${tun.fd}")
 
-            if (!startSocks5Server()) {
-                Log.e(TAG, "SOCKS5 start failed")
-                stopVpn()
-                return
-            }
+            // SOCKS5 is no longer required -- TCP and UDP both connect
+            // directly via protect() now (removes an extra hop/handshake
+            // difference versus a real device's own TCP stack). Started
+            // here only as a currently-harmless leftover; startup no
+            // longer blocks or fails on it.
+            startSocks5Server()
 
             // Resolved once here and captured by the relay thread's
             // closure below -- passed explicitly into every handlePacket()
@@ -291,7 +299,7 @@ class AppTrackVpnService : VpnService() {
 
             startRelay(tun, connectivityManager)
 
-            if (!vpnRunning || !socks5Running || !relayRunning) {
+            if (!vpnRunning || !relayRunning) {
                 Log.e(TAG, "VPN components are not all running")
                 stopVpn()
                 return
@@ -327,6 +335,30 @@ class AppTrackVpnService : VpnService() {
                 out.write(buf, 0, len)
             } catch (e: Throwable) {
                 Log.w(TAG, "writeToTun failed", e)
+            }
+        }
+
+        // Lets generic UDP (game traffic, QUIC, etc.) sockets bypass our
+        // own VPN routing so they reach the real internet directly --
+        // SOCKS5 (used for TCP) doesn't handle UDP.
+        TcpIpRelay.protectSocket = { socket ->
+            try {
+                protect(socket)
+            } catch (e: Throwable) {
+                Log.w(TAG, "protect() failed", e)
+                false
+            }
+        }
+
+        // TCP now also connects directly (protect()'d) instead of going
+        // through the local SOCKS5 hop -- one less proxy layer, matching
+        // how proven capture apps (PCAPdroid, NetGuard) actually connect.
+        TcpIpRelay.protectTcpSocket = { socket ->
+            try {
+                protect(socket)
+            } catch (e: Throwable) {
+                Log.w(TAG, "protect() failed (TCP)", e)
+                false
             }
         }
 
@@ -369,6 +401,8 @@ class AppTrackVpnService : VpnService() {
     private fun stopRelay() {
         relayRunning = false
         TcpIpRelay.writeToTun = null
+        TcpIpRelay.protectSocket = null
+        TcpIpRelay.protectTcpSocket = null
         TcpIpRelay.reset()
     }
 
@@ -494,6 +528,7 @@ misc:
         Log.i(TAG, "========== STOP VPN ==========")
 
         vpnRunning = false
+        isRunning = false
         relayRunning = false
         socks5Running = false
 

@@ -158,4 +158,33 @@ class MonitorService {
 
     await _flowController.close();
   }
+
+  /// Overlay (floating PIP-style panel showing live traffic on top of
+  /// other apps, similar to Reqable's debug panel).
+  Future<bool> hasOverlayPermission() async {
+    return await _methodChannel.invokeMethod<bool>(
+          'hasOverlayPermission',
+        ) ??
+        false;
+  }
+
+  Future<void> openOverlayPermission() async {
+    await _methodChannel.invokeMethod(
+      'openOverlayPermission',
+    );
+  }
+
+  /// Returns true if started, throws a PlatformException with code
+  /// 'OVERLAY_PERMISSION_REQUIRED' if the permission isn't granted yet.
+  Future<void> startOverlay() async {
+    await _methodChannel.invokeMethod(
+      'startOverlay',
+    );
+  }
+
+  Future<void> stopOverlay() async {
+    await _methodChannel.invokeMethod(
+      'stopOverlay',
+    );
+  }
 }

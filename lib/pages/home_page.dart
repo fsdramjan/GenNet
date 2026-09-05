@@ -41,10 +41,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   String _protocolFilter = 'ALL';
   String _sortMode = 'recent';
 
-  // ---------------------------------------------------------------------------
-  // IP INFORMATION CACHE
-  // ---------------------------------------------------------------------------
-
   final Map<String, IpInfo> _ipInfoCache = {};
   final Set<String> _ipLookupLoading = {};
   final Set<String> _ipLookupFailed = {};
@@ -82,10 +78,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _loadApps();
   }
 
-  // ===========================================================================
-  // APP LOADING
-  // ===========================================================================
-
   Future<void> _loadApps() async {
     try {
       final apps = await _monitor.listInstalledApps();
@@ -118,16 +110,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  // ===========================================================================
-  // IP WHO IS
-  // ===========================================================================
-
   Future<IpInfo?> _lookupIp(String ip) async {
     final normalizedIp = ip.trim();
 
     if (normalizedIp.isEmpty) return null;
 
-    // Local/private/reserved IP হলে API request করার দরকার নেই।
     if (_isPrivateOrLocalIp(normalizedIp)) {
       final localInfo = IpInfo(
         ip: normalizedIp,
@@ -155,14 +142,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       return localInfo;
     }
 
-    // Cache
     final cached = _ipInfoCache[normalizedIp];
 
     if (cached != null) {
       return cached;
     }
 
-    // একই IP-এর জন্য একসাথে multiple request prevent
     if (_ipLookupLoading.contains(normalizedIp)) {
       for (int i = 0; i < 40; i++) {
         await Future.delayed(const Duration(milliseconds: 100));
@@ -264,7 +249,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   bool _isPrivateOrLocalIp(String ip) {
-    // IPv4
     final parts = ip.split('.');
 
     if (parts.length == 4) {
@@ -283,34 +267,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       final a = numbers[0];
       final b = numbers[1];
 
-      // 10.0.0.0/8
       if (a == 10) return true;
 
-      // 172.16.0.0/12
       if (a == 172 && b >= 16 && b <= 31) {
         return true;
       }
 
-      // 192.168.0.0/16
       if (a == 192 && b == 168) {
         return true;
       }
 
-      // 127.0.0.0/8
       if (a == 127) return true;
 
-      // 169.254.0.0/16
       if (a == 169 && b == 254) {
         return true;
       }
 
-      // 0.0.0.0
       if (a == 0) return true;
 
       return false;
     }
 
-    // Basic IPv6 local checks
     final lower = ip.toLowerCase();
 
     if (lower == '::1') return true;
@@ -337,14 +314,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       if (_ipInfoCache.containsKey(ip)) continue;
       if (_ipLookupLoading.contains(ip)) continue;
 
-      // Fire-and-forget.
       _lookupIp(ip);
     }
   }
-
-  // ===========================================================================
-  // MONITOR START / STOP
-  // ===========================================================================
 
   Future<void> _toggleMonitoring() async {
     if (_busy) return;
@@ -354,7 +326,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     });
 
     try {
-      // STOP
       if (_running) {
         await _monitor.stop();
 
@@ -375,7 +346,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         return;
       }
 
-      // START validation
       if (_selectedPackages.isEmpty) {
         _show('Select at least one app first.');
         return;
@@ -409,7 +379,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             _flows = List<FlowEntry>.from(flows);
           });
 
-          // Dynamic IP lookup.
           _startIpLookups(flows);
         },
         onError: (error) {
@@ -463,10 +432,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     }
   }
-
-  // ===========================================================================
-  // APP SELECTOR
-  // ===========================================================================
 
   Future<void> _openAppSelector() async {
     if (_running) return;
@@ -647,6 +612,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                       );
 
                                       return _appSelectorRow(
+                                        // Stable identity per app, keyed
+                                        // by package name -- without
+                                        // this, Flutter can reuse a
+                                        // row's Element/State for a
+                                        // DIFFERENT app after the list
+                                        // is filtered by search, making
+                                        // an app look like it got
+                                        // "unselected" (or its check
+                                        // animation replay) even though
+                                        // nothing in `temp` actually
+                                        // changed.
+                                        key: ValueKey(app.packageName),
                                         app: app,
                                         checked: checked,
                                         onChanged: (value) {
@@ -705,11 +682,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _appSelectorRow({
+    Key? key,
     required AppInfo app,
     required bool checked,
     required ValueChanged<bool?> onChanged,
   }) {
     return InkWell(
+      key: key,
       borderRadius: BorderRadius.circular(16),
       onTap: () => onChanged(!checked),
       child: Container(
@@ -798,10 +777,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // EXPORT
-  // ===========================================================================
-
   Future<void> _exportCsv() async {
     if (_flows.isEmpty) {
       _show('No traffic data to export.');
@@ -836,10 +811,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  // ===========================================================================
-  // CLEAR
-  // ===========================================================================
-
   void _clearFlows() {
     if (_flows.isEmpty) {
       _show('Nothing to clear.');
@@ -853,9 +824,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _show('Live traffic list cleared');
   }
 
-  // ===========================================================================
-  // FILTER + SORT
-  // ===========================================================================
+  void _pipOverlay() async {
+    final hasPermission = await _monitor.hasOverlayPermission();
+
+    if (!hasPermission) {
+      if (!mounted) return;
+      _show('Enable "Display over other apps" permission, then tap again.');
+      await _monitor.openOverlayPermission();
+      return;
+    }
+
+    try {
+      await _monitor.startOverlay();
+      if (!mounted) return;
+      _show('Floating panel started — switch to your game/app to see it.');
+    } catch (e) {
+      if (!mounted) return;
+      _show('Could not start overlay: $e');
+    }
+  }
 
   List<FlowEntry> get _visibleFlows {
     List<FlowEntry> result = List<FlowEntry>.from(_flows);
@@ -905,10 +892,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return result;
   }
 
-  // ===========================================================================
-  // TOTALS
-  // ===========================================================================
-
   int get _totalBytes {
     return _flows.fold<int>(
       0,
@@ -931,10 +914,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         )
         .length;
   }
-
-  // ===========================================================================
-  // HELPERS
-  // ===========================================================================
 
   void _show(String message) {
     if (!mounted) return;
@@ -1001,10 +980,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     super.dispose();
   }
-
-  // ===========================================================================
-  // SHARED UI
-  // ===========================================================================
 
   Widget _gradientButton({
     required String label,
@@ -1098,10 +1073,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // BUILD
-  // ===========================================================================
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1123,10 +1094,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ===========================================================================
-  // HEADER
-  // ===========================================================================
 
   Widget _header() {
     return Container(
@@ -1199,6 +1166,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           _exportCsv();
                         } else if (value == 'txt') {
                           _exportTxt();
+                        } else if (value == 'pip') {
+                          _pipOverlay();
                         } else if (value == 'clear') {
                           _clearFlows();
                         }
@@ -1230,6 +1199,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               ),
                               SizedBox(width: 10),
                               Text('Export TXT'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: 'pip',
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.delete_outline,
+                                size: 19,
+                              ),
+                              SizedBox(width: 10),
+                              Text('Floating overlay (PIP)'),
                             ],
                           ),
                         ),
@@ -1358,10 +1341,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ===========================================================================
-  // SETUP
-  // ===========================================================================
 
   Widget _setupTab() {
     return ListView(
@@ -1716,10 +1695,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // LIVE TRAFFIC
-  // ===========================================================================
-
   Widget _trafficTab() {
     final visibleFlows = _visibleFlows;
 
@@ -2063,10 +2038,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // FLOW TILE WITH IP INFO
-  // ===========================================================================
-
   Widget _flowTile(FlowEntry flow) {
     final protocol = _protocolLabel(flow.protocol);
 
@@ -2303,10 +2274,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return parts.join(', ');
   }
 
-  // ===========================================================================
-  // FLOW DETAILS
-  // ===========================================================================
-
   void _showFlowDetails(
     FlowEntry flow,
     AppInfo? app,
@@ -2317,7 +2284,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     final existingInfo = _ipInfoCache[flow.destinationIp];
 
-    // Details খুললে lookup নিশ্চিত করা।
     if (existingInfo == null &&
         !_isPrivateOrLocalIp(
           flow.destinationIp,
@@ -2375,8 +2341,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
-
-                      // APP HEADER
                       Row(
                         children: [
                           app != null
@@ -2455,10 +2419,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         ],
                       ),
-
                       const SizedBox(height: 22),
-
-                      // DATA
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(
@@ -2507,10 +2468,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ],
                         ),
                       ),
-
                       const SizedBox(height: 22),
-
-                      // CONNECTION
                       const Text(
                         'Connection',
                         style: TextStyle(
@@ -2519,38 +2477,30 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           color: _ink,
                         ),
                       ),
-
                       const SizedBox(height: 10),
-
                       _detailTile(
                         icon: Icons.dns_outlined,
                         title: 'Destination IP',
                         value: flow.destinationIp,
                         copyable: true,
                       ),
-
                       _detailTile(
                         icon: Icons.settings_ethernet_rounded,
                         title: 'Port',
                         value: flow.destinationPort.toString(),
                         copyable: true,
                       ),
-
                       _detailTile(
                         icon: Icons.swap_horiz_rounded,
                         title: 'Protocol',
                         value: flow.protocol,
                       ),
-
                       _detailTile(
                         icon: Icons.language_rounded,
                         title: 'IP version',
                         value: 'IPv${flow.ipVersion}',
                       ),
-
                       const SizedBox(height: 22),
-
-                      // IP WHO IS
                       Row(
                         children: [
                           const Icon(
@@ -2580,9 +2530,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             ),
                         ],
                       ),
-
                       const SizedBox(height: 10),
-
                       if (loading && info == null)
                         Container(
                           padding: const EdgeInsets.all(
@@ -2902,10 +2850,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // APP ICON
-  // ===========================================================================
-
   Widget _appIcon(
     AppInfo app, {
     double size = 44,
@@ -2954,10 +2898,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ===========================================================================
-  // SORT
-  // ===========================================================================
-
   PopupMenuItem<String> _sortItem(
     String value,
     String title,
@@ -2978,10 +2918,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  // ===========================================================================
-  // EMPTY STATE
-  // ===========================================================================
 
   Widget _emptyState() {
     return Center(
@@ -3078,10 +3014,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 }
 
-// ============================================================================
-// IP INFO MODEL
-// ============================================================================
-
 class IpInfo {
   final String ip;
   final bool success;
@@ -3164,10 +3096,6 @@ class IpInfo {
     );
   }
 }
-
-// ============================================================================
-// TAB LABEL
-// ============================================================================
 
 class _TabLabel extends StatelessWidget {
   const _TabLabel({
